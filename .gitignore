@@ -1,0 +1,46 @@
+# 開発時にアプリが参照する設定ファイル
+settings.json
+
+# OS・クラウドが生成する隠しファイル
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# エディタのローカルな状態記録など (共有したい設定だけ許可する)
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# AIエージェントの履歴や設定ファイル
+# .gemini/ # 必要になったらコメントアウト
+
+# Python 実行環境・キャッシュ
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+.coverage
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Node.js
+node_modules/
+
+# 機密情報 (APIキーや認証情報など)
+.env
+.env.*
+credentials.json
+
+# 一時ファイル
+*.log
+*.tmp
+tmp/
+temp/

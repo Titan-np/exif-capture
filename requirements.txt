@@ -1,0 +1,7 @@
+Pillow
+pystray
+keyboard
+pywin32
+pyinstaller
+customtkinter
+win11toast
