@@ -1,6 +1,5 @@
 import os
 import sys
-import datetime
 
 
 def get_app_path(relative_path: str = ""):
@@ -52,39 +51,6 @@ def get_asset_path(filename: str, dev_filename: str = None):
         return os.path.join(get_app_path(), "assets", target_filename)
 
 
-def write_log(message: str, only_dev: bool = False):
-    """
-    コンソールおよびログファイルに日時付きでログを出力する
-
-    Args:
-        message (str): 出力するメッセージ
-        only_dev (bool): 開発時のみログを出力するかどうか
-    """
-    # 開発時のみログを出力する場合、exe化後は出力しない
-    if only_dev and getattr(sys, "frozen", False):
-        return
-
-    # タイムスタンプを取得 (秒まで)
-    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    formatted_log = f"[{current_time}] {message}"
-
-    # コンソール（標準出力）に出力
-    print(formatted_log)
-
-    try:
-        # ログファイルの保存先フォルダを作成
-        log_directory = get_app_path("logs")
-        if not os.path.exists(log_directory):
-            os.makedirs(log_directory, exist_ok=True)
-
-        # 既存のログファイルがあれば追記する
-        log_file_path = os.path.join(log_directory, "app.log")
-        with open(log_file_path, "a", encoding="utf-8") as log_file:
-            log_file.write(formatted_log + "\n")
-    except Exception as exception:
-        print(f"[{current_time}] ログファイルへの書き込みに失敗しました。\n{exception}")
-
-
 def get_windows_accent_colors(fallback_color: str = "#228B22"):
     """
     Windowsの個人用設定からアクセントカラーとホバー用のカラーコードを取得する
@@ -111,7 +77,9 @@ def get_windows_accent_colors(fallback_color: str = "#228B22"):
         green = (accent_color_dword >> 8) & 0xFF
         blue = (accent_color_dword >> 16) & 0xFF
     except Exception as exception:
-        write_log(f"Windowsのアクセントカラーの取得に失敗しました。デフォルトカラーを使用します。\n{exception}")
+        from notifier import notifier
+
+        notifier.log(f"Windowsのアクセントカラーの取得に失敗しました。デフォルトカラーを使用します。\n{exception}")
         # 取得失敗時はフォールバック文字列からRGBを抽出
         red = int(fallback_color[1:3], 16)
         green = int(fallback_color[3:5], 16)

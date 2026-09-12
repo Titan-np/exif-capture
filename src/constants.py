@@ -10,4 +10,4 @@ APP_USER_MODEL_ID = "exif_capture.app"
 APP_SETTINGS_USER_MODEL_ID = "exif_capture.settings"
 
 # アプリケーションのバージョン
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0-beta.1"

@@ -10,10 +10,8 @@ from settings_ui import *
 from capture import *
 from utils import *
 from constants import *
+from notifier import *
 from hotkey_manager import HotkeyManager
-
-# 設定画面から「設定の適用・保存」が行われたことを受け取るためのイベント
-_update_event = multiprocessing.Event()
 
 # ホットキー管理者インスタンス
 _hotkey_manager = None
@@ -34,20 +32,20 @@ def _create_tray_icon_image():
         return Image.open(icon_path)
     except Exception as exception:
         # 読み込みに失敗した場合はダミー画像として水色の四角を返す
-        write_log(f"アイコン画像の読み込みに失敗しました。\n{exception}")
+        notifier.log(f"アイコン画像の読み込みに失敗しました。\n{exception}")
         icon_image = Image.new("RGB", (64, 64), color=(0, 128, 255))
         return icon_image
 
 
 def _watch_update_event():
     """
-    設定画面からの更新通知イベント（_update_event）を待機し、
+    設定画面からの更新通知イベント（settings_update_event）を待機し、
     ホットキーマネージャーに再読み込みを要求する監視ループ
     """
     while True:
         # 設定変更イベントが発火するまで待機
-        _update_event.wait()
-        _update_event.clear()
+        settings_update_event.wait()
+        settings_update_event.clear()
 
         # 設定変更に伴いホットキーを再登録
         if _hotkey_manager is not None:
@@ -68,7 +66,7 @@ def _close_application(tray_icon_instance, menu_item_instance):
         _hotkey_manager.stop()
 
     # 通知領域からアイコンを削除し、アプリケーションの実行を終了する
-    write_log("終了します。")
+    notifier.notify("終了します。", "")
     tray_icon_instance.stop()
 
 
@@ -78,7 +76,7 @@ def _open_save_directory(icon, item):
     if os.path.exists(save_directory):
         os.startfile(save_directory)
     else:
-        write_log(f"保存先フォルダが存在しません: {save_directory}")
+        notifier.notify("保存先フォルダが存在しません。", save_directory, buttons=[BUTTON_OPEN_SETTINGS])
 
 
 def _open_log_file(icon, item):
@@ -87,18 +85,18 @@ def _open_log_file(icon, item):
     if os.path.exists(log_file_path):
         os.startfile(log_file_path)
     else:
-        write_log(f"ログファイルが存在しません: {log_file_path}")
+        notifier.notify("ログファイルが存在しません。", log_file_path)
 
 
 def _launch_application():
     """
     通知領域への常駐とキーボード監視を開始する
     """
-
     # ホットキー管理クラスをインスタンス化して監視を開始
     global _hotkey_manager
     _hotkey_manager = HotkeyManager(callback_function=capture_screenshot)
     _hotkey_manager.start()
+    # TODO: ホットキー登録に失敗した場合のエラーハンドリングを追加する
 
     # 設定変更通知を監視するスレッドを起動
     update_watcher_thread = threading.Thread(target=_watch_update_event, daemon=True)
@@ -106,7 +104,7 @@ def _launch_application():
 
     # 通知領域に常駐させるアイコンと右クリックメニューを設定する
     tray_menu = pystray.Menu(
-        pystray.MenuItem("設定を開く", lambda icon, item: open_settings_window(icon, item, _update_event), default=True),
+        pystray.MenuItem("設定を開く", open_settings_window, default=True),
         pystray.MenuItem("保存先フォルダを開く", _open_save_directory),
         pystray.MenuItem("ログファイルを開く", _open_log_file),
         pystray.MenuItem("終了", _close_application),
@@ -114,7 +112,8 @@ def _launch_application():
     tray_icon = pystray.Icon(name=APP_NAME, icon=_create_tray_icon_image(), title=APP_NAME, menu=tray_menu)
 
     # 通知領域での常駐を開始してメインループを起動する
-    write_log(f"起動しました。(バージョン: {APP_VERSION})")
+    shortcut_key = settings.get("capture.triggerShortcut")
+    notifier.notify(f"起動しました。(v{APP_VERSION})", f"ショートカットキー ({shortcut_key}) を押すとスクリーンショットを撮影します。")
     tray_icon.run()
 
 

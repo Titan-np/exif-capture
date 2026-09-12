@@ -1,0 +1,41 @@
+name: 自動リリース
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-release:
+    name: Windows向け実行ファイルの生成・リリース発行
+    runs-on: windows-latest
+    permissions:
+      # Releasesへの新規作成とファイル添付に必要な書き込み権限を付与するための設定
+      contents: write
+
+    steps:
+      - name: リポジトリのチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python環境のセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: 依存ライブラリのインストール
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 実行ファイルのビルド
+        run: |
+          python tools/build.py
+
+      - name: GitHub Releasesの作成とファイル添付
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.exe
+          # タグ名に'beta'が含まれている場合、Pre-releaseとして発行
+          prerelease: ${{ contains(github.ref_name, 'beta') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

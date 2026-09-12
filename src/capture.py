@@ -7,11 +7,32 @@ import ctypes.wintypes
 import threading
 import win32gui
 from PIL import ImageGrab, PngImagePlugin
-from win11toast import toast
 
 from settings_manager import *
 from utils import *
 from constants import *
+from notifier import *
+
+# Windows の最大パス長（MAX_PATH 260 から終端文字分を引いた値）
+_WINDOWS_MAX_PATH_LENGTH = 259
+
+# 撮影処理の連続実行による競合・滞留を防ぐためのロック
+_capture_lock = threading.Lock()
+
+
+class _FormattableTimestamp(datetime.datetime):
+    """
+    ファイル名プリセットの {timestamp} に対応する datetime サブクラス
+    書式指定がない場合はデフォルト書式を使用する
+    """
+
+    _DEFAULT_FORMAT = "%Y%m%d_%H%M%S"
+
+    def __format__(self, spec):
+        # 書式指定がない場合はデフォルト書式を使用する
+        if not spec:
+            return self.strftime(self._DEFAULT_FORMAT)
+        return self.strftime(spec)
 
 
 def _get_active_window_properties():
@@ -84,15 +105,32 @@ def _generate_output_path(window_title):
     # Windowsのファイル名として使用できない禁止文字を安全な文字に置換する
     safe_title = re.sub(r'[\\/*?:"<>|]', "_", window_title)
 
-    # 現在時刻のタイムスタンプを取得
-    current_time = datetime.datetime.now()
-    file_timestamp = current_time.strftime("%Y%m%d_%H%M%S")
+    # 現在時刻を取得（書式指定対応のタイムスタンプ）
+    current_time = _FormattableTimestamp.now()
 
-    # ファイル名を生成
-    output_filename = preset_pattern.format(timestamp=file_timestamp, title=safe_title)
+    # ファイル名・フォルダパスを生成
+    try:
+        output_filename = preset_pattern.format(timestamp=current_time, title=safe_title)
+    except (KeyError, ValueError, IndexError) as exception:
+        # プリセット書式エラー時は設定変更を促す
+        notifier.notify(
+            title="撮影に失敗しました。",
+            message="ファイル名プリセットの書式が不正です。設定画面で修正してください。",
+            buttons=[BUTTON_OPEN_SETTINGS, BUTTON_OPEN_LOG],
+        )
+        return None
 
-    # フォルダパスとファイル名を結合し返す
     output_path = os.path.join(save_directory, output_filename)
+
+    # ファイル名が Windows の最大パス長を超える場合はエラーとする
+    if len(output_path) > _WINDOWS_MAX_PATH_LENGTH:
+        notifier.notify(
+            title="撮影に失敗しました。",
+            message=f"保存先パスが最大長({_WINDOWS_MAX_PATH_LENGTH}文字)を超えています。設定を見直してください。\n({output_path})",
+            buttons=[BUTTON_OPEN_SETTINGS, BUTTON_OPEN_LOG],
+        )
+        return None
+
     return output_path
 
 
@@ -156,55 +194,7 @@ def play_capture_sound(volume=None):
         mci_send(f"setaudio capture_sound volume to {mci_volume}", None, 0, 0)
         mci_send("play capture_sound", None, 0, 0)
     except Exception as exception:
-        write_log(f"通知音の再生に失敗しました。\n{exception}")
-
-
-def _notify_capture(output_path):
-    """
-    スクリーンショット撮影後にWindowsのトースト通知を表示する
-    通知には「画像を開く」「保存先フォルダを開く」のボタンを含める
-
-    Args:
-        output_path (str): 保存されたスクリーンショットの絶対パス
-    """
-    # 設定でWindows通知が無効の場合は何もしない
-    if not settings.get("capture.enableSystemNotification"):
-        return
-
-    try:
-        # 通知アイコンのパスを取得
-        icon_path = get_asset_path("icon.ico", "icon_dev.ico")
-        icon_config = {"src": icon_path, "placement": "appLogoOverride"}
-
-        # ファイルパスをfile:/// URI形式に変換（Windowsのバックスラッシュをスラッシュに変換）
-        file_uri = "file:///" + output_path.replace("\\", "/")
-        folder_uri = "file:///" + os.path.dirname(output_path).replace("\\", "/")
-
-        # 通知に表示するアクションボタンの定義
-        buttons = [
-            {"activationType": "protocol", "arguments": file_uri, "content": "画像を開く"},
-            {"activationType": "protocol", "arguments": folder_uri, "content": "保存先フォルダを開く"},
-        ]
-
-        # 通知本文（保存先パスを含む）
-        notification_body = f"スクリーンショットを撮影しました。\n{output_path}"
-
-        # トースト通知を表示する（通知本体のクリック時は画像を開く）
-        # app_id を指定しないと通知上部のアプリ名に「Python」と表示されてしまうため、明示的に指定する
-        toast(
-            APP_NAME,
-            notification_body,
-            buttons=buttons,
-            icon=icon_config,
-            on_click=file_uri,
-            app_id=APP_NAME,
-        )
-    except Exception as exception:
-        write_log(f"通知の表示に失敗しました。\n{exception}")
-
-
-# 撮影処理の連続実行による競合・滞留を防ぐためのロック
-_capture_lock = threading.Lock()
+        notifier.log(f"通知音の再生に失敗しました。\n{exception}")
 
 
 def capture_screenshot():
@@ -213,7 +203,7 @@ def capture_screenshot():
     """
     # 連続押しによる多重実行を防止する（すでに撮影処理が走っている場合はスキップ）
     if not _capture_lock.acquire(blocking=False):
-        write_log("撮影処理が実行中のため、キー入力をスキップしました。")
+        notifier.log("撮影処理が実行中のため、キー入力をスキップしました。")
         return
 
     try:
@@ -232,30 +222,37 @@ def capture_screenshot():
             left, top, right, bottom = window_rectangle
             screenshot_image = ImageGrab.grab(bbox=(left, top, right, bottom), all_screens=True)
 
-        # 4. 保存先パス・EXIFデータを生成
+        # 4. 保存先パス生成（プリセット書式エラー時・パス長超過時は None が返る）
         output_path = _generate_output_path(window_title)
+        if output_path is None:
+            return
+
+        # 5. EXIFデータ・PNG情報を生成
         exif_metadata, png_info = _generate_exif_metadata(screenshot_image)
 
-        # 5. スクリーンショットを保存
+        # 6. スクリーンショットを保存
         screenshot_image.save(output_path, "PNG", exif=exif_metadata, pnginfo=png_info)
 
-        # 6. 通知音を鳴らす（設定で有効な場合）
-        soundVolume = settings.get("capture.soundVolume")
-        if soundVolume > 0:
-            play_capture_sound(soundVolume)
+        # 7. 通知音を鳴らす（設定で有効な場合）
+        play_capture_sound()
 
-        # 7. Windowsトースト通知を表示する（設定で有効な場合）
-        enableSystemNotification = settings.get("capture.enableSystemNotification")
-        if enableSystemNotification:
-            # メインスレッドをブロックしないよう別スレッドで実行
-            threading.Thread(target=_notify_capture, args=(output_path,), daemon=True).start()
-
-        # 8. ログ出力
-        write_log(f"スクリーンショットを撮影しました。({output_path})")
+        # 8. Windows通知・ログ出力
+        notifier.notify(
+            title="スクリーンショットを撮影しました。",
+            message=os.path.basename(output_path),
+            buttons=[BUTTON_OPEN_IMAGE, BUTTON_OPEN_FOLDER],
+            image_path=output_path,
+        )
 
     except Exception as exception:
-        # エラー出力
-        write_log(f"エラーが発生しました。\n{exception}")
+        # エラー通知・ログ出力
+        notifier.notify(
+            title="撮影に失敗しました。",
+            message="エラーが発生しました。詳細はログファイルを参照してください。",
+            log_message=f"エラーが発生しました。\n{exception}",
+            buttons=[BUTTON_OPEN_LOG],
+        )
+
     finally:
         # 撮影処理完了後にロックを解放
         _capture_lock.release()

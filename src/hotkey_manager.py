@@ -5,7 +5,7 @@ import ctypes.wintypes
 import threading
 
 from settings_manager import settings
-from utils import write_log
+from notifier import notifier
 
 
 class HotkeyManager:
@@ -88,7 +88,8 @@ class HotkeyManager:
         self._hotkey_thread_id = None
         self._is_hotkey_registered = False
 
-    def _parse_shortcut_string(self, shortcut_string):
+    @classmethod
+    def _parse_shortcut_string(cls, shortcut_string):
         """
         ショートカット文字列（例: 'shift+print_screen', 'ctrl+alt+s'）を
         Windows API用の修飾キーフラグと仮想キーコードに変換する
@@ -99,7 +100,7 @@ class HotkeyManager:
         Returns:
             tuple: (修飾キーフラグ, 仮想キーコード) のタプル。パース失敗時は (None, None)
         """
-        if not shortcut_string:
+        if not shortcut_string or not isinstance(shortcut_string, str):
             return None, None
 
         # '+' で分割して各キー名を正規化
@@ -107,38 +108,68 @@ class HotkeyManager:
         if not key_parts:
             return None, None
 
+        # 末尾が '+' で終わっている（例: 'ctrl+'）など、入力途中の形式は無効とする
+        if shortcut_string.strip().endswith("+"):
+            return None, None
+
         # キー長押し時のリピート発火を抑制するフラグを付与
-        modifiers = self._MOD_NOREPEAT
+        modifiers = cls._MOD_NOREPEAT
         virtual_key_code = None
+        non_modifier_count = 0
 
         for part in key_parts:
             if part in ("ctrl", "control"):
-                modifiers |= self._MOD_CONTROL
+                modifiers |= cls._MOD_CONTROL
             elif part in ("alt", "option"):
-                modifiers |= self._MOD_ALT
+                modifiers |= cls._MOD_ALT
             elif part in ("shift",):
-                modifiers |= self._MOD_SHIFT
+                modifiers |= cls._MOD_SHIFT
             elif part in ("windows", "win", "super"):
-                modifiers |= self._MOD_WIN
-            elif part in self._SPECIAL_VIRTUAL_KEY_MAP:
-                virtual_key_code = self._SPECIAL_VIRTUAL_KEY_MAP[part]
-            elif len(part) == 1:
-                # 1文字のアルファベットまたは数字
-                character = part.upper()
-                if "A" <= character <= "Z" or "0" <= character <= "9":
-                    virtual_key_code = ord(character)
-                else:
-                    # 記号などの場合は VkKeyScanW で仮想キーコードを取得
-                    scanned_code = ctypes.windll.user32.VkKeyScanW(ord(part)) & 0xFF
-                    if scanned_code != 0xFF:
-                        virtual_key_code = scanned_code
-                    else:
+                modifiers |= cls._MOD_WIN
+            else:
+                # 修飾キー以外の主キー
+                non_modifier_count += 1
+                if part in cls._SPECIAL_VIRTUAL_KEY_MAP:
+                    virtual_key_code = cls._SPECIAL_VIRTUAL_KEY_MAP[part]
+                elif len(part) == 1:
+                    # 1文字のアルファベットまたは数字
+                    character = part.upper()
+                    if "A" <= character <= "Z" or "0" <= character <= "9":
                         virtual_key_code = ord(character)
+                    else:
+                        # 記号などの場合は VkKeyScanW で仮想キーコードを取得
+                        scanned_code = ctypes.windll.user32.VkKeyScanW(ord(part)) & 0xFF
+                        if scanned_code != 0xFF:
+                            virtual_key_code = scanned_code
+                        else:
+                            virtual_key_code = ord(character)
+                else:
+                    # 未知のキー名が含まれている場合は無効
+                    return None, None
 
-        if virtual_key_code is None:
+        # 主キーがちょうど1つ指定されており、かつ仮想キーコードが特定できた場合のみ有効
+        if non_modifier_count != 1 or virtual_key_code is None:
             return None, None
 
         return modifiers, virtual_key_code
+
+    @classmethod
+    def is_valid_shortcut(cls, shortcut_string):
+        """
+        指定されたショートカットキー文字列が有効なキーの組み合わせかを判定する
+        UI向けのエラーメッセージ生成は呼び出し元で行い、ここでは純粋な真偽値のみを返す
+
+        Args:
+            shortcut_string (str): 判定対象のショートカットキー文字列
+
+        Returns:
+            bool: 有効なキーの組み合わせであれば True、無効なら False
+        """
+        if not shortcut_string or not str(shortcut_string).strip():
+            return False
+
+        modifiers, virtual_key_code = cls._parse_shortcut_string(shortcut_string)
+        return modifiers is not None and virtual_key_code is not None
 
     def _register_hotkey(self, shortcut_string):
         """
@@ -152,7 +183,7 @@ class HotkeyManager:
         """
         modifiers, virtual_key_code = self._parse_shortcut_string(shortcut_string)
         if modifiers is None or virtual_key_code is None:
-            write_log(f"無効なショートカット形式です: '{shortcut_string}'", only_dev=True)
+            notifier.log(f"無効なショートカット形式です: '{shortcut_string}'")
             return False
 
         # OSのRegisterHotKey APIを呼び出す
@@ -160,11 +191,11 @@ class HotkeyManager:
 
         if success:
             self._is_hotkey_registered = True
-            write_log(f"ショートカットキーを登録しました: {shortcut_string} (MOD: 0x{modifiers:X}, VK: 0x{virtual_key_code:X})", only_dev=True)
+            notifier.log(f"ショートカットキーを登録しました: {shortcut_string} (MOD: 0x{modifiers:X}, VK: 0x{virtual_key_code:X})")
             return True
         else:
             error_code = ctypes.windll.kernel32.GetLastError()
-            write_log(f"ショートカットキーの登録に失敗しました: {shortcut_string} (エラーコード: {error_code})", only_dev=True)
+            notifier.log(f"ショートカットキーの登録に失敗しました: {shortcut_string} (エラーコード: {error_code})")
             return False
 
     def _unregister_hotkey(self):
@@ -174,7 +205,7 @@ class HotkeyManager:
         if self._is_hotkey_registered:
             ctypes.windll.user32.UnregisterHotKey(None, self._HOTKEY_IDENTIFIER)
             self._is_hotkey_registered = False
-            write_log("ショートカットキーの登録を解除しました。", only_dev=True)
+            notifier.log("ショートカットキーの登録を解除しました。")
 
     def _message_loop(self):
         """
@@ -192,14 +223,14 @@ class HotkeyManager:
         while ctypes.windll.user32.GetMessageW(ctypes.byref(message_structure), None, 0, 0) > 0:
             # ホットキー押下イベントを受信
             if message_structure.message == self._WM_HOTKEY and message_structure.wParam == self._HOTKEY_IDENTIFIER:
-                write_log("ショートカットキー入力を検知しました。", only_dev=True)
+                notifier.log("ショートカットキー入力を検知しました。")
                 if self._callback_function:
                     # コールバック（撮影処理）を別スレッドで非同期実行
                     threading.Thread(target=self._callback_function, daemon=True).start()
 
             # 設定変更に伴うホットキー再設定メッセージを受信
             elif message_structure.message == self._WM_USER_RELOAD_HOTKEY:
-                write_log("ホットキーの再読み込み要求を受信しました。", only_dev=True)
+                notifier.log("ホットキーの再読み込み要求を受信しました。")
                 self._unregister_hotkey()
                 settings.load()
                 new_shortcut = settings.get("capture.triggerShortcut")
