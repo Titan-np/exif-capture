@@ -86,6 +86,7 @@ def build_app():
         "--icon=assets/icon.ico",
         # assetsフォルダ内のすべてのファイルをバンドル対象にする (Windows環境を想定してセミコロン区切り)
         "--add-data=assets;assets",
+        "--paths=src",  # src フォルダを明示的に探索パスに追加
         f"--name={APP_NAME}",
         "src/main.pyw",
     ]
