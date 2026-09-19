@@ -93,10 +93,16 @@ def _generate_output_path(window_title):
         str: スクリーンショットの保存先パス
     """
 
-    # 保存先フォルダパスを取得し、フォルダが無ければ作成
-    save_directory = settings.get("save.directory")
-    if not os.path.exists(save_directory):
-        os.makedirs(save_directory)
+    # 保存先フォルダパスを取得・作成
+    save_directory = ensure_save_directory()
+    if not save_directory:
+        # 保存先フォルダの取得・作成失敗時はログ確認を促す
+        notifier.notify(
+            title="撮影に失敗しました。",
+            message="保存先フォルダを準備できませんでした。詳細はログファイルを参照してください。",
+            buttons=[NotificationButton.OPEN_LOG],
+        )
+        return None
 
     # ファイル名プリセットを取得（例: "{timestamp}_{title}.png"）
     preset_pattern = settings.get("save.filenamePreset")
@@ -115,8 +121,8 @@ def _generate_output_path(window_title):
         # プリセット書式エラー時は設定変更を促す
         notifier.notify(
             title="撮影に失敗しました。",
-            message="ファイル名プリセットの書式が不正です。設定画面で修正してください。",
-            buttons=[BUTTON_OPEN_SETTINGS, BUTTON_OPEN_LOG],
+            message="ファイル名プリセットの書式が不正です。設定を見直してください。",
+            buttons=[NotificationButton.OPEN_SETTINGS, NotificationButton.OPEN_LOG],
         )
         return None
 
@@ -127,7 +133,7 @@ def _generate_output_path(window_title):
         notifier.notify(
             title="撮影に失敗しました。",
             message=f"保存先パスが最大長({_WINDOWS_MAX_PATH_LENGTH}文字)を超えています。設定を見直してください。\n({output_path})",
-            buttons=[BUTTON_OPEN_SETTINGS, BUTTON_OPEN_LOG],
+            buttons=[NotificationButton.OPEN_SETTINGS, NotificationButton.OPEN_LOG],
         )
         return None
 
@@ -240,18 +246,13 @@ def capture_screenshot():
         notifier.notify(
             title="スクリーンショットを撮影しました。",
             message=os.path.basename(output_path),
-            buttons=[BUTTON_OPEN_IMAGE, BUTTON_OPEN_FOLDER],
+            buttons=[NotificationButton.OPEN_IMAGE, NotificationButton.OPEN_FOLDER],
             image_path=output_path,
         )
 
     except Exception as exception:
         # エラー通知・ログ出力
-        notifier.notify(
-            title="撮影に失敗しました。",
-            message="エラーが発生しました。詳細はログファイルを参照してください。",
-            log_message=f"エラーが発生しました。\n{exception}",
-            buttons=[BUTTON_OPEN_LOG],
-        )
+        notifier.error("撮影に失敗しました。", str(exception))
 
     finally:
         # 撮影処理完了後にロックを解放

@@ -2,21 +2,25 @@ import os
 import sys
 import json
 import re
+import shutil
+from datetime import datetime
 
 from utils import *
-from notifier import notifier
+from notifier import notifier, NotificationButton
 
 
 class SettingsManager:
     # 設定ファイルのファイル名
     _SETTINGS_FILE_NAME = "settings.json"
+    # 一時設定ファイルのファイル名（破損防止保存用）
+    _SETTINGS_TEMPORARY_NAME = "settings.json.tmp"
 
     # 設定のデフォルト値
     _DEFAULT_SETTINGS = {
         "capture.triggerShortcut": "shift+print screen",
         "capture.enableSystemNotification": True,
         "capture.soundVolume": 100,
-        "save.directory": r"C:\Screenshots",
+        "save.directory": "~\\Pictures\\Screenshots",
         "save.filenamePreset": "{timestamp}_{title}.png",
         "save.embedDatetimeMetadata": True,
     }
@@ -48,82 +52,140 @@ class SettingsManager:
 
     def __init__(self):
         self._data = {}
-        self.load()
+        # コンストラクタで load() を行うと循環参照が発生するため、インスタンス生成後に明示的に load() を呼び出す運用とする
+        # 詳細は本ファイル最下部のコメントを参照
+        # self.load()
 
-    def _get_settings_path(self):
+    @property
+    def _settings_path(self):
         """
         設定ファイルの絶対パスを取得する
         """
         return get_app_path(self._SETTINGS_FILE_NAME)
 
     @property
-    def settings_path(self):
-        """外部から設定ファイルのパスを参照する"""
-        return self._get_settings_path()
+    def _temporary_settings_path(self):
+        """
+        一時設定ファイルの絶対パスを取得する
+        """
+        return get_app_path(self._SETTINGS_TEMPORARY_NAME)
+
+    def _backup_corrupted_file(self):
+        """
+        現在の設定ファイルを日時付きファイル名で退避（バックアップ）する
+
+        Returns:
+            str | None: 退避先のファイル名（失敗時やファイル不在時は None）
+        """
+        if not os.path.exists(self._settings_path):
+            return None
+
+        corrupted_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        corrupted_filename = f"{self._SETTINGS_FILE_NAME}.corrupted_{corrupted_timestamp}"
+        corrupted_path = get_app_path(corrupted_filename)
+
+        try:
+            shutil.copy2(self._settings_path, corrupted_path)
+            notifier.log(f"読み込みに失敗した設定ファイルを退避しました: {corrupted_path}")
+            return corrupted_filename
+        except OSError as exception:
+            notifier.log(f"設定ファイルの退避に失敗しました。\n{exception}")
+            return None
 
     def load(self):
         """
         設定ファイルから設定情報を読み込む
-        ファイルが存在しない場合は初期設定を作成する
+        ファイルが存在しない場合は設定ファイルを新規作成する
+        ファイル破損時や一部項目の値が不正な場合は退避して通知し、初期設定を適用する
         """
-        # 設定ファイルの絶対パスを取得
-        settings_path = self._get_settings_path()
-
-        try:
-            # ベースとしてデフォルト設定をコピーする
+        # 1. 設定ファイルが存在しない場合は設定ファイルを新規作成する
+        if not os.path.exists(self._settings_path):
             self._data = self._DEFAULT_SETTINGS.copy()
-            needs_save = False
+            notifier.log(f"設定ファイルを新規作成します。({self._settings_path})")
+            self.save()
+            return
 
-            # 設定ファイルが存在する場合、読み込む
-            if os.path.exists(settings_path):
-                with open(settings_path, "r", encoding="utf-8") as file:
-                    loaded_data = json.load(file)
-
-                loaded_old_key = False
-                loaded_unnecessary_key = False
-
-                # デフォルト設定の全項目を基準にループして設定値を決定
-                for key, default_value in self._DEFAULT_SETTINGS.items():
-                    if key in loaded_data:
-                        # 1. キーが設定ファイル内に存在する場合は、その値を読み込む
-                        self._data[key] = loaded_data.pop(key)
-                    else:
-                        # 2. 旧キーが設定ファイル内に存在する場合は、現キー名として読み込む
-                        old_keys = self._MIGRATION_MAP.get(key, [])
-                        loaded_old_key = False
-                        for old_key in old_keys:
-                            if old_key in loaded_data:
-                                self._data[key] = loaded_data.pop(old_key)
-                                loaded_old_key = True
-                                break
-
-                        if loaded_old_key:
-                            # 旧キーを読み込んだ場合、設定ファイル保存対象とする
-                            needs_save = True
-                        else:
-                            # 3. 現キーも旧キーも存在しない場合は、デフォルト値を読み込む
-                            self._data[key] = default_value
-                            needs_save = True
-
-                # 4. 設定ファイル読み込み後に設定ファイルのキーが残っていれば、不要なキーが含まれていたと判定（設定ファイル更新対象とする）
-                if loaded_data:
-                    needs_save = True
-
-                notifier.log(f"設定ファイルを読み込みました。({settings_path})")
-
-            else:
-                # ファイルが存在しない場合は新規作成する
-                needs_save = True
-                notifier.log(f"初期設定ファイルを作成します。({settings_path})")
-
-            # 設定ファイルの更新や新規作成が必要な場合、ファイルを保存する
-            if needs_save:
-                self.save()
+        # 2. 設定ファイルを読み込む
+        try:
+            with open(self._settings_path, "r", encoding="utf-8") as file:
+                loaded_data = json.load(file)
 
         except Exception as exception:
-            # エラーが発生した場合、デフォルト設定を適用して起動を継続する
-            notifier.log(f"設定ファイルの読み込みに失敗したため、デフォルト設定を使用します。\n{exception}")
+            # 2-1. JSON構文エラーなど設定ファイル全体が壊れていた場合、上書き前に設定ファイルを退避する
+            corrupted_filename = self._backup_corrupted_file()
+            message = f"元の設定ファイルを「{corrupted_filename}」に退避し、デフォルト設定を適用しました。"
+
+            notifier.notify(
+                title="設定ファイルの読み込みに失敗しました。",
+                message=f"{message}\n詳細はログファイルを参照してください。",
+                log_message=f"{message}\n{exception}",
+                buttons=[NotificationButton.OPEN_SETTINGS, NotificationButton.OPEN_LOG],
+            )
+
+            # 2-2. デフォルト設定を適用し、新規設定ファイルとして保存する
             self._data = self._DEFAULT_SETTINGS.copy()
+            self.save()
+            return
+
+        # 3. 設定項目読み込みのベースとして、デフォルト設定をコピー
+        self._data = self._DEFAULT_SETTINGS.copy()
+        needs_save = False
+        invalid_keys = {}  # バリデーションエラー情報: {key: (raw_value, error_message)}
+
+        # 4. デフォルト設定にある設定項目ごとに設定値を取得
+        for key, default_value in self._DEFAULT_SETTINGS.items():
+            loaded_value = None
+
+            # 4-1. 現キー名の設定値が存在する場合は、読み込む
+            if key in loaded_data:
+                loaded_value = loaded_data.pop(key)
+            else:
+                # 4-2. 旧キー名の設定値が存在する場合は、現キーの値として読み込み、上書き保存対象とする
+                for old_key in self._MIGRATION_MAP.get(key, []):
+                    if old_key in loaded_data:
+                        loaded_value = loaded_data.pop(old_key)
+                        needs_save = True
+                        break
+
+            # 5. 設定値を読み込めた場合、バリデーションを実行し正常値であれば使用
+            if loaded_value is not None:
+                validation_error = self.validate(key, loaded_value)
+                # 5-1. エラーが無ければ正常値として採用
+                if validation_error is None:
+                    self._data[key] = loaded_value
+                # 5-2. エラーがあればデフォルト値を使用し、設定ファイルを退避・保存対象とする
+                else:
+                    self._data[key] = default_value
+                    invalid_keys[key] = (loaded_value, validation_error)
+                    needs_save = True
+
+            # 6. 設定ファイル内に現キー名・旧キー名ともに存在しない場合、デフォルト値を使用し、設定ファイルを保存対象とする
+            else:
+                self._data[key] = default_value
+                needs_save = True
+
+        notifier.log(f"設定ファイルを読み込みました。({self._settings_path})")
+
+        # 7. 設定ファイル読み込み後に未知のキーが残っていれば、不要なキーが含まれていたと判定し、設定ファイルを保存対象とする
+        if loaded_data:
+            needs_save = True
+
+        # 8. 設定ファイル内に壊れている設定値が含まれていた場合、上書き前に設定ファイルを退避する
+        if invalid_keys:
+            corrupted_filename = self._backup_corrupted_file()
+            message = f"元の設定ファイルを「{corrupted_filename}」に退避し、デフォルト設定を適用しました。"
+            log_details = "\n".join([f"キー '{key}' の値 ({item[0]!r}) が不正です: {item[1]}" for key, item in invalid_keys.items()])
+
+            notifier.notify(
+                title="設定ファイルの読み込みに失敗しました。",
+                message=f"{message}\n詳細はログファイルを参照してください。",
+                log_message=f"{message}\n{log_details}",
+                buttons=[NotificationButton.OPEN_SETTINGS, NotificationButton.OPEN_LOG],
+            )
+
+        # 9. 設定ファイルの更新が必要な場合、ファイルを保存する
+        if needs_save:
+            self.save()
 
     def get(self, key):
         """
@@ -142,15 +204,31 @@ class SettingsManager:
 
     def save(self):
         """
-        現在の設定内容を settings.json に書き込む
+        現在の設定内容をsettings.json に書き込む（破損防止保存）
         """
-        settings_path = self._get_settings_path()
+
         try:
-            with open(settings_path, "w", encoding="utf-8") as file:
+            # 1. 一時ファイルに書き出し、ディスクへ確実にフラッシュする
+            with open(self._temporary_settings_path, "w", encoding="utf-8") as file:
+                # JSONとして書き込む
                 json.dump(self._data, file, indent=4, ensure_ascii=False)
-            notifier.log(f"設定ファイルを保存しました。({settings_path})")
+                # 書き込んだデータをPythonからOSのキャッシュへ強制的に流す
+                file.flush()
+                # OSのキャッシュをディスクへ強制的に書き込む
+                os.fsync(file.fileno())
+
+            # 2. 一時ファイルを本来の設定ファイルパスへ安全に置き換える
+            os.replace(self._temporary_settings_path, self._settings_path)
+            notifier.log(f"設定ファイルを保存しました。({self._settings_path})")
+
         except Exception as exception:
             notifier.log(f"設定ファイルの保存に失敗しました。\n{exception}")
+            # 保存に失敗した一時ファイルが残っていれば削除する
+            if os.path.exists(self._temporary_settings_path):
+                try:
+                    os.remove(self._temporary_settings_path)
+                except OSError:
+                    pass
 
     def has_validation_rule(self, key):
         """
@@ -226,13 +304,16 @@ class SettingsManager:
         """
         path_string = str(value).strip()
 
+        # チルダ（~）や環境変数を展開して検証対象の絶対パスを取得
+        expanded_path = expand_path(path_string)
+
         # パス全体で使用できない禁止文字（< > " | ? *）をチェック
-        for char in path_string:
+        for char in expanded_path:
             if char in '<>"|?*':
                 return f"フォルダパスに使用できない文字が含まれています: {char}"
 
         # ドライブレターコロン（例: 'C:\' のコロン）以外の不正なコロンをチェック
-        drive, rest_path = os.path.splitdrive(path_string)
+        drive, rest_path = os.path.splitdrive(expanded_path)
         if ":" in rest_path:
             return "フォルダパスに使用できない文字が含まれています: :"
 
@@ -309,5 +390,15 @@ class SettingsManager:
         return None
 
 
-# 初呼び出し時、設定ファイルを読み込む
+# __init__()内で self.load() を呼び出さない理由:
+# __init__()内に self.load() があると、以下の問題が発生する。
+# 1. まず右辺の SettingsManager() を作ろうとして、__init__() の中身を上から順に実行する。
+# 2. __init__() の中で self.load() が実行される。
+# 3. load() の最中に設定エラーが起きると、notifier.notify() が呼ばれる。
+# 4. notifier は通知設定を見るために「from settings_manager import settings（変数 settings の参照）」を要求する。
+# 5. だがPythonから見ると、「今まさに右辺の SettingsManager() を作っている最中のため、左辺の settings という変数はまだ存在していない」 という状態。
+# 6. その結果、「未完成のモジュールから settings は読み込めない」と ImportError（循環インポートエラー）が発生してしまう。
+#
+# 上記より、settings 変数へのインスタンス代入を完了させてから load() を呼び出す。
 settings = SettingsManager()
+settings.load()

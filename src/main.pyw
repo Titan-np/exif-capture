@@ -66,26 +66,9 @@ def _close_application(tray_icon_instance, menu_item_instance):
         _hotkey_manager.stop()
 
     # 通知領域からアイコンを削除し、アプリケーションの実行を終了する
-    notifier.notify("終了します。", "")
+    # settings.load() # 終了処理時は確実に終了させるため、設定ファイルの再読み込みは行わずメモリ上の設定を用いて通知する
+    notifier.notify("終了します。")
     tray_icon_instance.stop()
-
-
-def _open_save_directory(icon, item):
-    """保存先フォルダをエクスプローラーで開く"""
-    save_directory = settings.get("save.directory")
-    if os.path.exists(save_directory):
-        os.startfile(save_directory)
-    else:
-        notifier.notify("保存先フォルダが存在しません。", save_directory, buttons=[BUTTON_OPEN_SETTINGS])
-
-
-def _open_log_file(icon, item):
-    """ログファイルを規定のテキストエディタで開く"""
-    log_file_path = os.path.join(get_app_path("logs"), "app.log")
-    if os.path.exists(log_file_path):
-        os.startfile(log_file_path)
-    else:
-        notifier.notify("ログファイルが存在しません。", log_file_path)
 
 
 def _launch_application():
@@ -105,8 +88,8 @@ def _launch_application():
     # 通知領域に常駐させるアイコンと右クリックメニューを設定する
     tray_menu = pystray.Menu(
         pystray.MenuItem("設定を開く", open_settings_window, default=True),
-        pystray.MenuItem("保存先フォルダを開く", _open_save_directory),
-        pystray.MenuItem("ログファイルを開く", _open_log_file),
+        pystray.MenuItem("保存先フォルダを開く", open_save_directory),
+        pystray.MenuItem("ログファイルを開く", open_log_file),
         pystray.MenuItem("終了", _close_application),
     )
     tray_icon = pystray.Icon(name=APP_NAME, icon=_create_tray_icon_image(), title=APP_NAME, menu=tray_menu)

@@ -451,11 +451,11 @@ class SettingsWindow(ctk.CTk):
         key = "save.directory"
 
         def browse_directory():
-            # 初期表示フォルダ：入力があればそのフォルダ、無ければユーザーフォルダを表示
+            # 初期表示フォルダ：入力があればそのフォルダを展開、無ければユーザーフォルダを表示
             entry = setting_row.widget
-            initial_dir = entry.get()
+            initial_dir = expand_path(entry.get())
             if not os.path.exists(initial_dir):
-                initial_dir = os.path.expanduser("~")
+                initial_dir = expand_path("~")
             # フォルダ選択ダイアログを表示
             selected_dir = filedialog.askdirectory(initialdir=initial_dir, title="フォルダを選択")
             # フォルダが選択された場合
@@ -643,7 +643,7 @@ def open_settings_window(icon=None, item=None):
             title="設定画面の起動に失敗しました。",
             message="エラーが発生しました。詳細はログファイルを参照してください。",
             log_message=f"エラーが発生しました。\n{exception}",
-            buttons=[BUTTON_OPEN_LOG],
+            buttons=[NotificationButton.OPEN_LOG],
         )
 
 

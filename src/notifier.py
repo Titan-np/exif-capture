@@ -1,17 +1,28 @@
 import os
 import sys
+import time
+import asyncio
 import datetime
 import threading
-from win11toast import toast
+from enum import StrEnum
+from win11toast import toast_async
 
 from constants import *
-from utils import get_app_path, get_asset_path
+from utils import *
 
-# 通知アクションボタンの定数
-BUTTON_OPEN_IMAGE = "キャプチャした画像を開く"
-BUTTON_OPEN_FOLDER = "保存先フォルダを開く"
-BUTTON_OPEN_LOG = "ログファイルを開く"
-BUTTON_OPEN_SETTINGS = "設定画面を開く"
+# ログファイル書き込み時のリトライ設定（マルチプロセス環境等でのファイル競合対策）
+LOG_WRITE_MAX_RETRY_COUNT = 3
+LOG_WRITE_RETRY_INTERVAL_SECONDS = 0.05
+
+
+# 通知アクションボタンの種別
+class NotificationButton(StrEnum):
+    """通知に表示するアクションボタンの種別。StrEnum のため文字列としてそのまま使用可能。"""
+
+    OPEN_IMAGE = "キャプチャした画像を開く"
+    OPEN_FOLDER = "保存先フォルダを開く"
+    OPEN_LOG = "ログファイルを開く"
+    OPEN_SETTINGS = "設定画面を開く"
 
 
 class Notifier:
@@ -91,13 +102,13 @@ class Notifier:
         except Exception as exception:
             self.log(f"スタートメニューショートカットの登録・更新に失敗しました。\n{exception}")
 
-    def _send(self, title, body, image=None, buttons=None, on_click=None):
+    def _send(self, title, body=None, image=None, buttons=None, on_click=None):
         """
         バックグラウンドスレッドでWindowsのトースト通知を送信・表示する内部関数
 
         Args:
             title (str): 通知のタイトル
-            body (str): 通知の本文
+            body (str, optional): 通知の本文
             image (str or dict, optional): 通知に表示する画像のパス
             buttons (list, optional): アクションボタンのリスト
             on_click (callable or str, optional): 通知本体やボタンクリック時に呼び出す関数、または開くURI
@@ -108,11 +119,12 @@ class Notifier:
                 # トースト通知の引数を設定する
                 # app_id を指定することで、スタートメニューのショートカットと紐づきヘッダー左にアプリアイコンが表示される
                 toast_kwargs = {
-                    "body": body,
                     "app_id": APP_NAME,
                 }
 
-                # 画像パス・ボタン・クリックイベントが指定された場合、引数に追加する
+                # 通知本文・画像パス・ボタン・クリックイベントが指定された場合、引数に追加する
+                if body:
+                    toast_kwargs["body"] = body
                 if image:
                     toast_kwargs["image"] = {"src": image}
                 if buttons:
@@ -120,7 +132,20 @@ class Notifier:
                 if on_click:
                     toast_kwargs["on_click"] = on_click
 
-                toast(title, **toast_kwargs)
+                # win11toast は通知が消えた後も Windows 側からコールバックが届くことがあり、
+                # 既に完了した処理に対して結果を書き込もうとしてエラーになる。
+                # この無害なエラーだけを無視し、それ以外はデフォルト処理に委譲する例外ハンドラを設定する
+                def _suppress_late_callback_error(event_loop, context):
+                    if isinstance(context.get("exception"), asyncio.InvalidStateError):
+                        return
+                    event_loop.default_exception_handler(context)
+
+                loop = asyncio.new_event_loop()
+                loop.set_exception_handler(_suppress_late_callback_error)
+                try:
+                    loop.run_until_complete(toast_async(title, **toast_kwargs))
+                finally:
+                    loop.close()
 
             except Exception as exception:
                 self.log(f"通知の表示に失敗しました。\n{exception}")
@@ -131,16 +156,25 @@ class Notifier:
     def log(self, message: str):
         """
         コンソールおよびログファイルに日時付きでログを出力する
+        マルチプロセス等での競合によるファイルアクセスエラー時は短時間待機して再試行する
 
         Args:
             message (str): 出力するメッセージ
         """
-        # タイムスタンプを取得 (秒まで)
-        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        formatted_log = f"[{current_time}] {message}"
+
+        def _format(text):
+            """複数行テキストにタイムスタンプとインデントを付加する"""
+            # プレフィックスを作成 （1行目はタイムスタンプ・2行目以降は同幅のインデント）
+            timestamp = f"[{(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))}] "
+            indent = " " * len(timestamp)
+
+            # プレフィックスを付加して出力メッセージを作成
+            lines = text.split("\n")
+            formatted_lines = [timestamp + lines[0]] + [indent + line for line in lines[1:]]
+            return "\n".join(formatted_lines)
 
         # コンソール（標準出力）に出力
-        print(formatted_log)
+        print(_format(message))
 
         try:
             # ログファイルの保存先フォルダを作成
@@ -148,17 +182,31 @@ class Notifier:
             if not os.path.exists(log_directory):
                 os.makedirs(log_directory, exist_ok=True)
 
-            # 既存のログファイルがあれば追記する
             log_file_path = os.path.join(log_directory, "app.log")
-            with open(log_file_path, "a", encoding="utf-8") as log_file:
-                log_file.write(formatted_log + "\n")
+
+            # 書き込みの競合を防ぐためリトライしつつ書き込む
+            for attempt_count in range(1, LOG_WRITE_MAX_RETRY_COUNT + 1):
+                try:
+                    # 既存のログファイルがあれば追記する
+                    with open(log_file_path, "a", encoding="utf-8") as log_file:
+                        log_file.write(_format(message) + "\n")
+                    # 正常に書き込めたらループを終了
+                    break
+                except (PermissionError, OSError) as exception:
+                    # 最終試行でも失敗した場合はエラーを出力
+                    if attempt_count == LOG_WRITE_MAX_RETRY_COUNT:
+                        print(_format(f"ログファイルへの書き込みに失敗しました。\n{exception}"))
+                        break
+                    # 他プロセスのファイル解放を待つため待機
+                    time.sleep(LOG_WRITE_RETRY_INTERVAL_SECONDS)
+
         except Exception as exception:
-            print(f"[{current_time}] ログファイルへの書き込みに失敗しました。\n{exception}")
+            print(_format(f"ログファイルへの書き込み処理で予期せぬエラーが発生しました。\n{exception}"))
 
     def notify(
         self,
         title: str,
-        message: str,
+        message: str = None,
         log_message: str = None,
         buttons: list = None,
         image_path: str = None,
@@ -168,21 +216,21 @@ class Notifier:
 
         Args:
             title (str): 通知のタイトル
-            message (str): 通知本文（log_message未指定時はログ本文としても使用）
+            message (str, optional): 通知本文（log_message未指定時はログ本文としても使用）
             log_message (str, optional): ログ専用のメッセージ。指定時はmessageの代わりにログファイルへ出力する
-            buttons (list[str], optional): 表示するボタンのリスト（BUTTON_* 定数）
+            buttons (list[NotificationButton], optional): 表示するボタンのリスト
             image_path (str, optional): キャプチャ画像などの絶対パス
         """
         # 1. ログを出力
         log_message = log_message if log_message is not None else message
-        formatted_log_text = ": ".join([title, log_message])
+        formatted_log_text = f"{title}\n{log_message}" if log_message is not None else title
         self.log(formatted_log_text)
 
         # 2. 設定を確認し、Windows通知がオフであれば以降の処理を行わない
         # 循環参照防止のためメソッド内でインポート
+        # 多重読み込みを防ぐため、ここではファイル再読み込み（settings.load()）を行わずメモリ上の設定を参照する
         from settings_manager import settings
 
-        settings.load()
         if not settings.get("capture.enableSystemNotification"):
             return
 
@@ -191,14 +239,8 @@ class Notifier:
         on_click = None
 
         if buttons:
-            # 許可された定数のみを抽出
-            valid_button_set = {
-                BUTTON_OPEN_IMAGE,
-                BUTTON_OPEN_FOLDER,
-                BUTTON_OPEN_LOG,
-                BUTTON_OPEN_SETTINGS,
-            }
-            toast_buttons = [button for button in buttons if button in valid_button_set]
+            # NotificationButton に定義されたボタンのみを抽出
+            toast_buttons = [button for button in buttons if button in NotificationButton]
 
             def _handle_click(click_event_arguments=None):
                 # win11toastの仕様で、押したボタンは「http:ボタン文言」で引数に渡される
@@ -206,24 +248,17 @@ class Notifier:
 
                 try:
                     # 「キャプチャした画像を開く」または通知本体クリック（画像パスがある場合）
-                    if clicked_action == BUTTON_OPEN_IMAGE or (clicked_action == "" and image_path):
+                    if clicked_action == NotificationButton.OPEN_IMAGE or (clicked_action == "" and image_path):
                         if image_path and os.path.exists(image_path):
-                            os.startfile(image_path)
+                            safe_open_path(image_path, resource_name="キャプチャした画像")
                     # 「保存先フォルダを開く」
-                    elif clicked_action == BUTTON_OPEN_FOLDER:
-                        if image_path:
-                            target_directory = os.path.dirname(image_path)
-                        else:
-                            target_directory = settings.get("save.directory")
-                        if target_directory and os.path.exists(target_directory):
-                            os.startfile(target_directory)
+                    elif clicked_action == NotificationButton.OPEN_FOLDER:
+                        open_save_directory()
                     # 「ログファイルを開く」
-                    elif clicked_action == BUTTON_OPEN_LOG:
-                        log_file_path = get_app_path(os.path.join("logs", "app.log"))
-                        if os.path.exists(log_file_path):
-                            os.startfile(log_file_path)
+                    elif clicked_action == NotificationButton.OPEN_LOG:
+                        open_log_file()
                     # 「設定画面を開く」
-                    elif clicked_action == BUTTON_OPEN_SETTINGS:
+                    elif clicked_action == NotificationButton.OPEN_SETTINGS:
                         from settings_ui import open_settings_window
 
                         open_settings_window()
@@ -237,7 +272,7 @@ class Notifier:
             def _handle_click(click_event_arguments=None):
                 try:
                     if os.path.exists(image_path):
-                        os.startfile(image_path)
+                        safe_open_path(image_path, resource_name="キャプチャした画像")
                 except OSError as exception:
                     self.log(f"画像を開けませんでした。\n{exception}")
 
@@ -250,6 +285,21 @@ class Notifier:
             image=image_path,
             buttons=toast_buttons if toast_buttons else None,
             on_click=on_click,
+        )
+
+    def error(self, title, log_message: str):
+        """
+        エラー通知を行う（notify()のラッパー）
+
+        Args:
+            title (str): 通知のタイトル
+            log_message (str): エラーメッセージ（ログにのみ出力）
+        """
+        self.notify(
+            title=title,
+            message="エラーが発生しました。詳細はログファイルを参照してください。",
+            log_message=log_message,
+            buttons=[NotificationButton.OPEN_LOG],
         )
 
 

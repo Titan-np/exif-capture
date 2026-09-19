@@ -4,7 +4,6 @@ import ctypes
 import ctypes.wintypes
 import threading
 
-from settings_manager import settings
 from notifier import notifier
 
 
@@ -214,6 +213,8 @@ class HotkeyManager:
         self._hotkey_thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
 
         # 初期設定のショートカットキーを登録
+        from settings_manager import settings
+
         current_shortcut = settings.get("capture.triggerShortcut")
         self._register_hotkey(current_shortcut)
 
