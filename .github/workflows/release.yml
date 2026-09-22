@@ -33,10 +33,14 @@ jobs:
         run: |
           python tools/build.py
 
+      - name: 配布用zipファイルの作成
+        run: |
+          Compress-Archive -Path "dist/EXIF Capture.exe" -DestinationPath "dist/EXIF_Capture_${{ github.ref_name }}.zip"
+
       - name: GitHub Releasesの作成とファイル添付
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.exe
+          files: dist/*.zip
           # タグ名に'beta'が含まれている場合、Pre-releaseとして発行
           prerelease: ${{ contains(github.ref_name, 'beta') }}
         env:

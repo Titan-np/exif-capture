@@ -1,4 +1,4 @@
-# EXIF Capture
+# [EXIF Capture](https://github.com/Titan-np/exif-capture)
 
 Windows向けスクリーンショット撮影ツールです。  
 Windows標準のキャプチャ機能では記録されない「撮影日時（EXIF / PNGメタデータ）」を画像内に自動保存することが可能です。
@@ -8,7 +8,7 @@ Windows標準のキャプチャ機能では記録されない「撮影日時（E
 ## 動作環境
 
 - OS: Windows 10 / Windows 11 (64bit)
-- Python: 3.12 以上（ソースコードから実行・ビルドする場合）
+- Python: 3.11 以上（ソースコードから実行・ビルドする場合）
 
 ## 使い方
 

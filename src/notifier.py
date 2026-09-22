@@ -165,7 +165,7 @@ class Notifier:
         def _format(text):
             """複数行テキストにタイムスタンプとインデントを付加する"""
             # プレフィックスを作成 （1行目はタイムスタンプ・2行目以降は同幅のインデント）
-            timestamp = f"[{(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))}] "
+            timestamp = f"[{(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))}] "
             indent = " " * len(timestamp)
 
             # プレフィックスを付加して出力メッセージを作成

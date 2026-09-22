@@ -12,7 +12,7 @@ project_root_directory_path = os.path.dirname(script_directory_path)
 source_directory_path = os.path.join(project_root_directory_path, "src")
 sys.path.append(source_directory_path)
 
-from constants import APP_NAME
+from constants import APP_NAME  # pyrefly: ignore
 
 
 def clean_previous_build_artifacts():
@@ -49,7 +49,7 @@ def clean_previous_build_artifacts():
             try:
                 if os.path.isdir(target_path):
                     # Windows環境で読み取り専用ファイルが存在しても削除できるようハンドラを指定
-                    shutil.rmtree(target_path, onexc=remove_readonly_permission)
+                    shutil.rmtree(target_path, onerror=remove_readonly_permission)
                 else:
                     # 単一ファイルの場合も読み取り専用属性を解除してから削除
                     os.chmod(target_path, stat.S_IWRITE)
