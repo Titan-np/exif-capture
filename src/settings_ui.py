@@ -4,8 +4,6 @@ import ctypes
 import multiprocessing
 import customtkinter as ctk
 import tkinter.filedialog as filedialog
-import threading
-import keyboard
 from typing import NamedTuple
 
 from settings_manager import *
@@ -299,6 +297,7 @@ class SettingsWindow(ctk.CTk):
 
         # 各設定項目・UIパーツへの参照を保持
         self._setting_items = {}
+        self._shortcut_recorder = None
 
         # 適用・保存ボタンの参照を保持（バリデーション結果で活性/非活性を制御するため）
         self._button_apply = None
@@ -371,41 +370,65 @@ class SettingsWindow(ctk.CTk):
         """ショートカットキー設定項目を追加する"""
         key = "capture.triggerShortcut"
 
+        # 循環インポートを防ぎつつホットキー記録・判定を行うためローカルインポート
+        from hotkey_manager import HotkeyRecorder
+
+        # 記録ボタン押下時の処理
         def record_shortcut():
-            # 記録開始時の表示変更
             entry = setting_row.widget
             button = setting_row.button
             previous_value = entry.get()
-            button.configure(state="disabled", text="入力待ち...")
+
+            def _finish_recording(result_value):
+                # 低レベルキーボードフックを解除して入力待ち状態を終了
+                if self._shortcut_recorder:
+                    self._shortcut_recorder.stop()
+                    self._shortcut_recorder = None
+
+                entry.configure(state="normal")
+                entry.delete(0, "end")
+                entry.insert(0, result_value)
+                # 入力完了後にバリデーションを実行し適用・保存ボタンの状態を更新
+                self._run_validation()
+                button.configure(state="normal", text="キーを記録", command=record_shortcut)
+
+            # キー押下検知時のコールバック
+            def _on_key_captured(captured_shortcut):
+                # メインスレッドで安全にUIを更新
+                self.after(0, lambda: _finish_recording(captured_shortcut))
+
+            # キャンセル時のコールバック
+            def _on_cancelled():
+                # メインスレッドで元の値に戻す
+                self.after(0, lambda: _finish_recording(previous_value))
+
+            # 記録開始時のUI表示更新
+            entry.configure(state="normal")
             entry.delete(0, "end")
-            entry.insert(0, "キーを押してください...")
+            entry.insert(0, "キーを押してください（Escでキャンセル）")
             entry.configure(state="disabled")
 
-            def _record_thread():
-                # キーボード入力を待機（ブロッキング）
-                hotkey = keyboard.read_hotkey(suppress=False)
+            # ボタンを「キャンセル」に切り替え、再クリックで安全に中断できるように設定
+            button.configure(state="normal", text="キャンセル", command=lambda: _finish_recording(previous_value))
 
-                # メインプロセスで表示を更新する関数
-                def _update_display():
-                    entry.configure(state="normal")
-                    entry.delete(0, "end")
-                    # Escキーの場合はキャンセル扱いとして元の値に戻す
-                    if hotkey.lower() == "esc":
-                        entry.insert(0, previous_value)
-                    else:
-                        entry.insert(0, hotkey)
-                    button.configure(state="normal", text="キーを記録")
+            # 既存のレコーダーが残っていれば念のため停止
+            if self._shortcut_recorder:
+                self._shortcut_recorder.stop()
 
-                self.after(0, _update_display)
-
-            # 画面が固まらないよう別処理で待機
-            threading.Thread(target=_record_thread, daemon=True).start()
+            # 低レベルフック（WH_KEYBOARD_LL）を開始
+            # PrintScreenやAltキーなどのシステムキーも確実に捕捉し、
+            # 既存の登録済みホットキーによる撮影発火を防ぎながら安全に記録する
+            self._shortcut_recorder = HotkeyRecorder(
+                on_captured=_on_key_captured,
+                on_cancelled=_on_cancelled,
+            )
+            self._shortcut_recorder.start()
 
         setting_row = (
             self._create_row_builder(
                 key=key,
                 label_text="ショートカットキー:",
-                hint_text="記録ボタン押下後、設定したいキーを押してください。\nEscキーでキャンセル",
+                hint_text="記録ボタン押下後、設定したいキーを押してください。\nEscキーまたはキャンセルボタンで中断",
             )
             .add_entry(initial_value=settings.get(key))
             .add_button(text="キーを記録", width=100, command=record_shortcut)
@@ -610,6 +633,16 @@ class SettingsWindow(ctk.CTk):
         """
         self._apply_settings()
         self.destroy()
+
+    def destroy(self):
+        """
+        設定画面破棄時のクリーンアップ処理
+        キー記録中の低レベルフックが残っていれば確実に解除する
+        """
+        if hasattr(self, "_shortcut_recorder") and self._shortcut_recorder is not None:
+            self._shortcut_recorder.stop()
+            self._shortcut_recorder = None
+        super().destroy()
 
 
 def _run_settings_window_process(update_event=None):

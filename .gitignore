@@ -1,6 +1,9 @@
 # 開発時にアプリが参照する設定ファイル
 settings.json
 
+# ビルド時に生成するバージョン情報記載ファイル
+src/_version.py
+
 # OS・クラウドが生成する隠しファイル
 Thumbs.db
 .DS_Store

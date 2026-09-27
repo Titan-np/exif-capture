@@ -12,9 +12,16 @@ from utils import *
 from constants import *
 from notifier import *
 from hotkey_manager import HotkeyManager
+from version import APP_VERSION
 
 # ホットキー管理者インスタンス
 _hotkey_manager = None
+
+# 通知領域アイコンインスタンス
+_tray_icon = None
+
+# 初回起動フラグ（起動時通知と設定変更時通知の出し分けに使用）
+_is_initial_launch = True
 
 
 def _create_tray_icon_image():
@@ -75,15 +82,7 @@ def _launch_application():
     """
     通知領域への常駐とキーボード監視を開始する
     """
-    # ホットキー管理クラスをインスタンス化して監視を開始
-    global _hotkey_manager
-    _hotkey_manager = HotkeyManager(callback_function=capture_screenshot)
-    _hotkey_manager.start()
-    # TODO: ホットキー登録に失敗した場合のエラーハンドリングを追加する
-
-    # 設定変更通知を監視するスレッドを起動
-    update_watcher_thread = threading.Thread(target=_watch_update_event, daemon=True)
-    update_watcher_thread.start()
+    global _hotkey_manager, _tray_icon
 
     # 通知領域に常駐させるアイコンと右クリックメニューを設定する
     tray_menu = pystray.Menu(
@@ -92,12 +91,78 @@ def _launch_application():
         pystray.MenuItem("ログファイルを開く", open_log_file),
         pystray.MenuItem("終了", _close_application),
     )
-    tray_icon = pystray.Icon(name=APP_NAME, icon=_create_tray_icon_image(), title=APP_NAME, menu=tray_menu)
+    _tray_icon = pystray.Icon(name=APP_NAME, icon=_create_tray_icon_image(), title=APP_NAME, menu=tray_menu)
 
-    # 通知領域での常駐を開始してメインループを起動する
-    shortcut_key = settings.get("capture.triggerShortcut")
-    notifier.notify(f"起動しました。(v{APP_VERSION})", f"ショートカットキー ({shortcut_key}) を押すとスクリーンショットを撮影します。")
-    tray_icon.run()
+    # ホットキー登録成功・失敗時に呼び出される関数を定義
+    def _handle_hotkey_success(shortcut_key):
+        """
+        ホットキー登録成功時のコールバック処理
+        初回起動時であれば起動完了通知を表示し、トレイアイコンのツールチップを通常状態に更新する
+
+        Args:
+            shortcut_key (str): 登録に成功したショートカットキー文字列
+        """
+        global _is_initial_launch, _tray_icon
+
+        # 「起動しました」または「ショートカットキーを変更しました」の通知を表示
+        title = None
+        if _is_initial_launch:
+            title = f"起動しました。({APP_VERSION})"
+        else:
+            title = f"ショートカットキーを変更しました。"
+        notifier.notify(
+            title,
+            f"ショートカットキー ({shortcut_key}) を押すとスクリーンショットを撮影します。",
+        )
+
+        # ホットキー登録が完了した段階で、初回起動フラグを解除
+        _is_initial_launch = False
+
+        # トレイアイコンのツールチップを通常表示に復帰
+        if _tray_icon is not None:
+            _tray_icon.title = APP_NAME
+
+    def _handle_hotkey_failure(shortcut_key, error_code):
+        """
+        ホットキー登録失敗時のコールバック処理
+        起動完了通知の代わりに設定画面への誘導通知を表示し、トレイアイコンのツールチップを警告表示に更新する
+
+        Args:
+            shortcut_key (str): 登録に失敗したショートカットキー文字列
+            error_code (int): Windows APIのエラーコード
+        """
+        global _is_initial_launch, _tray_icon
+
+        # 他アプリとの競合等でホットキーが使えない旨を通知し、設定変更を案内する
+        notifier.notify(
+            title="ショートカットキーの登録に失敗しました",
+            message=f"'{shortcut_key}' は他のアプリと競合している可能性があります。設定画面から別のキーに変更してください。",
+            log_message=f"ショートカットキーの登録に失敗しました: {shortcut_key} (エラーコード: {error_code})",
+            buttons=[NotificationButton.OPEN_SETTINGS, NotificationButton.OPEN_LOG],
+        )
+
+        # ホットキー登録が完了した段階で、初回起動フラグを解除
+        _is_initial_launch = False
+
+        # トレイアイコンのツールチップに未登録状態を表示し、視覚的に警告する
+        if _tray_icon is not None:
+            _tray_icon.title = f"{APP_NAME} (ホットキー未登録)"
+
+    # ホットキー管理クラスをインスタンス化して監視を開始
+    # 登録成否コールバックを渡し、状態に応じた通知とトレイアイコン更新を行う
+    _hotkey_manager = HotkeyManager(
+        callback_function=capture_screenshot,
+        on_registration_failure=_handle_hotkey_failure,
+        on_registration_success=_handle_hotkey_success,
+    )
+    _hotkey_manager.start()
+
+    # 設定変更通知を監視するスレッドを起動
+    update_watcher_thread = threading.Thread(target=_watch_update_event, daemon=True)
+    update_watcher_thread.start()
+
+    # 通知領域での常駐を開始してメインループを起動する（起動通知は登録成否コールバック内で行う）
+    _tray_icon.run()
 
 
 # ここから実行

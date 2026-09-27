@@ -13,6 +13,7 @@ source_directory_path = os.path.join(project_root_directory_path, "src")
 sys.path.append(source_directory_path)
 
 from constants import APP_NAME  # pyrefly: ignore
+from version import get_app_version  # pyrefly: ignore
 
 
 def clean_previous_build_artifacts():
@@ -27,6 +28,7 @@ def clean_previous_build_artifacts():
         os.path.join(project_root_directory_path, "build"),
         os.path.join(project_root_directory_path, "dist"),
         os.path.join(project_root_directory_path, f"{APP_NAME}.spec"),
+        os.path.join(source_directory_path, "_version.py"),
     ]
 
     def remove_readonly_permission(function_reference, target_path, excinfo):
@@ -63,6 +65,28 @@ def clean_previous_build_artifacts():
     return True
 
 
+def create_version_file(version_string):
+    """
+    PyInstallerでexeにバンドルさせるための「バージョン情報一時ファイル」（src/_version.py）を生成する
+
+    Args:
+        version_string (str): 埋め込むバージョン文字列
+
+    Returns:
+        str: 生成した一時ファイルの絶対パス
+    """
+    version_file_path = os.path.join(source_directory_path, "_version.py")
+    file_content = (
+        "# このファイルは tools/build.py によってビルド時に自動生成されます。\n"
+        "# 手動で編集しないでください。\n"
+        f'APP_VERSION = "{version_string}"\n'
+    )
+    with open(version_file_path, "w", encoding="utf-8") as version_file:
+        version_file.write(file_content)
+    print(f"バージョン情報ファイルを生成しました ({version_string}): {version_file_path}")
+    return version_file_path
+
+
 def build_app():
     """
     アプリケーションのビルドプロセスを実行する
@@ -74,7 +98,11 @@ def build_app():
     if not clean_previous_build_artifacts():
         return 1
 
-    print(f"ビルドを開始します: {APP_NAME}")
+    # ビルドに埋め込むバージョン情報を取得し、exeにバンドルする「バージョン情報一時ファイル」を生成
+    build_version = get_app_version()
+    version_file_path = create_version_file(build_version)
+
+    print(f"ビルドを開始します: {APP_NAME} ({build_version})")
 
     # PyInstallerのコマンド構築
     command = [
@@ -107,6 +135,14 @@ def build_app():
     except Exception as exception:
         print(f"\n予期せぬエラーが発生しました:\n{exception}")
         return 1
+    finally:
+        # ビルド終了後、開発環境の「バージョン情報一時ファイル」を削除
+        if os.path.exists(version_file_path):
+            try:
+                os.remove(version_file_path)
+                print(f"一時バージョン情報ファイルを削除しました: {version_file_path}")
+            except Exception as exception:
+                print(f"一時バージョン情報ファイルの削除に失敗しました: {exception}")
 
 
 if __name__ == "__main__":
