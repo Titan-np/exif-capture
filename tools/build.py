@@ -12,8 +12,8 @@ project_root_directory_path = os.path.dirname(script_directory_path)
 source_directory_path = os.path.join(project_root_directory_path, "src")
 sys.path.append(source_directory_path)
 
-from constants import APP_NAME  # pyrefly: ignore
-from version import get_app_version  # pyrefly: ignore
+import lib.constants as constants
+import lib.version as version
 
 
 def clean_previous_build_artifacts():
@@ -27,7 +27,7 @@ def clean_previous_build_artifacts():
     targets_to_remove = [
         os.path.join(project_root_directory_path, "build"),
         os.path.join(project_root_directory_path, "dist"),
-        os.path.join(project_root_directory_path, f"{APP_NAME}.spec"),
+        os.path.join(project_root_directory_path, f"{constants.APP_NAME}.spec"),
         os.path.join(source_directory_path, "_version.py"),
     ]
 
@@ -99,10 +99,10 @@ def build_app():
         return 1
 
     # ビルドに埋め込むバージョン情報を取得し、exeにバンドルする「バージョン情報一時ファイル」を生成
-    build_version = get_app_version()
+    build_version = version.get_app_version()
     version_file_path = create_version_file(build_version)
 
-    print(f"ビルドを開始します: {APP_NAME} ({build_version})")
+    print(f"ビルドを開始します: {constants.APP_NAME} ({build_version})")
 
     # PyInstallerのコマンド構築
     command = [
@@ -115,7 +115,7 @@ def build_app():
         # assetsフォルダ内のすべてのファイルをバンドル対象にする (Windows環境を想定してセミコロン区切り)
         "--add-data=assets;assets",
         "--paths=src",  # src フォルダを明示的に探索パスに追加
-        f"--name={APP_NAME}",
+        f"--name={constants.APP_NAME}",
         "src/main.pyw",
     ]
 
@@ -124,7 +124,7 @@ def build_app():
         result = subprocess.run(command, cwd=project_root_directory_path)
 
         if result.returncode == 0:
-            print(f"\nビルドが完了しました！ dist/{APP_NAME}.exe を確認してください。")
+            print(f"\nビルドが完了しました！ dist/{constants.APP_NAME}.exe を確認してください。")
             return 0
         else:
             print(f"\nビルド中にエラーが発生しました (終了コード: {result.returncode})。")

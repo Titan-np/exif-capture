@@ -5,7 +5,8 @@
 
 import os
 import subprocess
-import sys
+
+import lib.utils as utils
 
 # バージョン情報が取得できなかった場合の代替文字列
 FALLBACK_VERSION = "バージョン番号取得失敗"
@@ -39,9 +40,9 @@ def get_app_version() -> str:
 
     # 3. 開発環境での直接実行時は、ローカルGitリポジトリから直近のタグ名を取得
     try:
-        # srcフォルダの親ディレクトリ（リポジトリルート）を取得
-        script_directory_path = os.path.dirname(os.path.abspath(__file__))
-        repository_root_path = os.path.dirname(script_directory_path)
+        # リポジトリルートを取得
+
+        repository_root_path = utils.get_app_path()
 
         git_command = ["git", "describe", "--tags", "--abbrev=0"]
         execution_result = subprocess.run(

@@ -1,17 +1,16 @@
-import os
-import sys
-import re
-import datetime
 import ctypes
 import ctypes.wintypes
+import datetime
+import os
+import re
 import threading
+
 import win32gui
 from PIL import ImageGrab, PngImagePlugin
 
-from settings_manager import *
-from utils import *
-from constants import *
-from notifier import *
+import lib.notifier as notifier
+import lib.settings as settings
+import lib.utils as utils
 
 # Windows の最大パス長（MAX_PATH 260 から終端文字分を引いた値）
 _WINDOWS_MAX_PATH_LENGTH = 259
@@ -94,13 +93,13 @@ def _generate_output_path(window_title):
     """
 
     # 保存先フォルダパスを取得・作成
-    save_directory = ensure_save_directory()
+    save_directory = utils.ensure_save_directory()
     if not save_directory:
         # 保存先フォルダの取得・作成失敗時はログ確認を促す
         notifier.notify(
             title="撮影に失敗しました。",
             message="保存先フォルダを準備できませんでした。詳細はログファイルを参照してください。",
-            buttons=[NotificationButton.OPEN_LOG],
+            buttons=[notifier.NotificationButton.OPEN_LOG],
         )
         return None
 
@@ -122,7 +121,7 @@ def _generate_output_path(window_title):
         notifier.notify(
             title="撮影に失敗しました。",
             message="ファイル名プリセットの書式が不正です。設定を見直してください。",
-            buttons=[NotificationButton.OPEN_SETTINGS, NotificationButton.OPEN_LOG],
+            buttons=[notifier.NotificationButton.OPEN_SETTINGS, notifier.NotificationButton.OPEN_LOG],
         )
         return None
 
@@ -133,7 +132,7 @@ def _generate_output_path(window_title):
         notifier.notify(
             title="撮影に失敗しました。",
             message=f"保存先パスが最大長({_WINDOWS_MAX_PATH_LENGTH}文字)を超えています。設定を見直してください。\n({output_path})",
-            buttons=[NotificationButton.OPEN_SETTINGS, NotificationButton.OPEN_LOG],
+            buttons=[notifier.NotificationButton.OPEN_SETTINGS, notifier.NotificationButton.OPEN_LOG],
         )
         return None
 
@@ -186,7 +185,7 @@ def play_capture_sound(volume=None):
         return
 
     # 音声ファイルのパスを取得
-    sound_path = get_asset_path("capture_sound.mp3")
+    sound_path = utils.get_asset_path("capture_sound.mp3")
 
     try:
         # WindowsのMCIコマンドでMP3を再生する
@@ -246,7 +245,7 @@ def capture_screenshot():
         notifier.notify(
             title="スクリーンショットを撮影しました。",
             message=os.path.basename(output_path),
-            buttons=[NotificationButton.OPEN_IMAGE, NotificationButton.OPEN_FOLDER],
+            buttons=[notifier.NotificationButton.OPEN_IMAGE, notifier.NotificationButton.OPEN_FOLDER],
             image_path=output_path,
         )
 

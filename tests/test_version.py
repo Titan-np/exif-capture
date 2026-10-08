@@ -7,7 +7,7 @@ import subprocess
 from unittest.mock import MagicMock, patch
 import pytest
 
-from version import FALLBACK_VERSION, get_app_version
+import lib.version as version
 
 
 class TestVersionResolution:
@@ -21,7 +21,7 @@ class TestVersionResolution:
         # GITHUB_REF_NAME は空にしておく
         monkeypatch.delenv("GITHUB_REF_NAME", raising=False)
 
-        resolved_version = get_app_version()
+        resolved_version = version.get_app_version()
         assert resolved_version == "v1.2.3-test"
 
     def test_get_app_version_from_github_ref_name(self, monkeypatch):
@@ -29,7 +29,7 @@ class TestVersionResolution:
         monkeypatch.delenv("EXIF_CAPTURE_VERSION", raising=False)
         monkeypatch.setenv("GITHUB_REF_NAME", "v2.0.0")
 
-        resolved_version = get_app_version()
+        resolved_version = version.get_app_version()
         assert resolved_version == "v2.0.0"
 
     def test_get_app_version_from_git_describe(self, monkeypatch):
@@ -42,7 +42,7 @@ class TestVersionResolution:
         mock_result.stdout = "v1.1.2\n"
 
         with patch("subprocess.run", return_value=mock_result):
-            resolved_version = get_app_version()
+            resolved_version = version.get_app_version()
             assert resolved_version == "v1.1.2"
 
     def test_get_app_version_fallback(self, monkeypatch):
@@ -52,5 +52,5 @@ class TestVersionResolution:
 
         # subprocess.run がエラー（Gitコマンド失敗）となるようモック化
         with patch("subprocess.run", side_effect=Exception("Git command failed")):
-            resolved_version = get_app_version()
-            assert resolved_version == FALLBACK_VERSION
+            resolved_version = version.get_app_version()
+            assert resolved_version == version.FALLBACK_VERSION

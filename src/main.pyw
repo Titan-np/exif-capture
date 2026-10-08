@@ -1,18 +1,16 @@
-import os
-import sys
-import threading
 import multiprocessing
+import threading
+
 import pystray
 from PIL import Image
 
-from settings_manager import *
-from settings_ui import *
-from capture import *
-from utils import *
-from constants import *
-from notifier import *
-from hotkey_manager import HotkeyManager
-from version import APP_VERSION
+import capture
+import lib.constants as constants
+import lib.hotkey as hotkey
+import lib.notifier as notifier
+import lib.utils as utils
+import lib.version as version
+import settings_window
 
 # ホットキー管理者インスタンス
 _hotkey_manager = None
@@ -32,7 +30,7 @@ def _create_tray_icon_image():
         PIL.Image.Image: 生成されたアイコン画像
     """
     # アイコン保存先パスを取得
-    icon_path = get_asset_path("icon.ico", "icon_dev.ico")
+    icon_path = utils.get_asset_path("icon.ico", "icon_dev.ico")
 
     try:
         # アイコン画像を読み込む
@@ -51,8 +49,8 @@ def _watch_update_event():
     """
     while True:
         # 設定変更イベントが発火するまで待機
-        settings_update_event.wait()
-        settings_update_event.clear()
+        settings_window.settings_update_event.wait()
+        settings_window.settings_update_event.clear()
 
         # 設定変更に伴いホットキーを再登録
         if _hotkey_manager is not None:
@@ -86,12 +84,12 @@ def _launch_application():
 
     # 通知領域に常駐させるアイコンと右クリックメニューを設定する
     tray_menu = pystray.Menu(
-        pystray.MenuItem("設定を開く", open_settings_window, default=True),
-        pystray.MenuItem("保存先フォルダを開く", open_save_directory),
-        pystray.MenuItem("ログファイルを開く", open_log_file),
+        pystray.MenuItem("設定を開く", settings_window.open_settings_window, default=True),
+        pystray.MenuItem("保存先フォルダを開く", utils.open_save_directory),
+        pystray.MenuItem("ログファイルを開く", utils.open_log_file),
         pystray.MenuItem("終了", _close_application),
     )
-    _tray_icon = pystray.Icon(name=APP_NAME, icon=_create_tray_icon_image(), title=APP_NAME, menu=tray_menu)
+    _tray_icon = pystray.Icon(name=constants.APP_NAME, icon=_create_tray_icon_image(), title=constants.APP_NAME, menu=tray_menu)
 
     # ホットキー登録成功・失敗時に呼び出される関数を定義
     def _handle_hotkey_success(shortcut_key):
@@ -107,7 +105,7 @@ def _launch_application():
         # 「起動しました」または「ショートカットキーを変更しました」の通知を表示
         title = None
         if _is_initial_launch:
-            title = f"起動しました。({APP_VERSION})"
+            title = f"起動しました。({version.APP_VERSION})"
         else:
             title = f"ショートカットキーを変更しました。"
         notifier.notify(
@@ -120,7 +118,7 @@ def _launch_application():
 
         # トレイアイコンのツールチップを通常表示に復帰
         if _tray_icon is not None:
-            _tray_icon.title = APP_NAME
+            _tray_icon.title = constants.APP_NAME
 
     def _handle_hotkey_failure(shortcut_key, error_code):
         """
@@ -138,7 +136,7 @@ def _launch_application():
             title="ショートカットキーの登録に失敗しました",
             message=f"'{shortcut_key}' は他のアプリと競合している可能性があります。設定画面から別のキーに変更してください。",
             log_message=f"ショートカットキーの登録に失敗しました: {shortcut_key} (エラーコード: {error_code})",
-            buttons=[NotificationButton.OPEN_SETTINGS, NotificationButton.OPEN_LOG],
+            buttons=[notifier.NotificationButton.OPEN_SETTINGS, notifier.NotificationButton.OPEN_LOG],
         )
 
         # ホットキー登録が完了した段階で、初回起動フラグを解除
@@ -146,12 +144,12 @@ def _launch_application():
 
         # トレイアイコンのツールチップに未登録状態を表示し、視覚的に警告する
         if _tray_icon is not None:
-            _tray_icon.title = f"{APP_NAME} (ホットキー未登録)"
+            _tray_icon.title = f"{constants.APP_NAME} (ホットキー未登録)"
 
     # ホットキー管理クラスをインスタンス化して監視を開始
     # 登録成否コールバックを渡し、状態に応じた通知とトレイアイコン更新を行う
-    _hotkey_manager = HotkeyManager(
-        callback_function=capture_screenshot,
+    _hotkey_manager = hotkey.Manager(
+        callback_function=capture.capture_screenshot,
         on_registration_failure=_handle_hotkey_failure,
         on_registration_success=_handle_hotkey_success,
     )

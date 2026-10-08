@@ -20,9 +20,9 @@ def get_app_path(relative_path: str = ""):
         # PyInstaller実行時は、exe本体と同じ階層のフォルダを基準にする
         base_directory = os.path.dirname(sys.executable)
     else:
-        # 通常のPython実行時は、スクリプトがある場所(src)の親(リポジトリルート)を基準にする
+        # 通常のPython実行時は、スクリプトがある場所(src/lib)の親の親(リポジトリルート)を基準にする
         script_directory = os.path.dirname(os.path.abspath(__file__))
-        base_directory = os.path.dirname(script_directory)
+        base_directory = os.path.dirname(os.path.dirname(script_directory))
 
     return os.path.join(base_directory, relative_path) if relative_path else base_directory
 
@@ -77,7 +77,7 @@ def get_windows_accent_colors(fallback_color: str = "#228B22"):
     Returns:
         tuple[str, str]: (アクセントカラーのHEXコード, ホバー用カラーのHEXコード)
     """
-    # ホバー時の明度を落とす倍率
+    # ホバー時の明度を落と使い倍率
     _HOVER_DIM_RATE = 0.8
 
     try:
@@ -93,7 +93,7 @@ def get_windows_accent_colors(fallback_color: str = "#228B22"):
         green = (accent_color_dword >> 8) & 0xFF
         blue = (accent_color_dword >> 16) & 0xFF
     except Exception as exception:
-        from notifier import notifier
+        import lib.notifier as notifier
 
         notifier.log(f"Windowsのアクセントカラーの取得に失敗しました。デフォルトカラーを使用します。\n{exception}")
         # 取得失敗時はフォールバック文字列からRGBを抽出
@@ -125,8 +125,7 @@ def safe_open_path(target_path: str, resource_name: str = "対象") -> bool:
     Returns:
         bool: 正常に開けた場合はTrue、失敗した場合はFalse
     """
-    # 循環インポートを回避するため関数内でインポート
-    from notifier import notifier
+    import lib.notifier as notifier
 
     # パスが空または存在しない場合はユーザーに通知して終了
     if not target_path or not os.path.exists(target_path):
@@ -184,7 +183,7 @@ def open_log_file(icon=None, item=None) -> bool:
                 pass
     except OSError as exception:
         # フォルダ作成やファイル作成失敗時のエラーハンドリング
-        from notifier import notifier
+        import lib.notifier as notifier
 
         notifier.error("ログファイルを作成できませんでした。", str(exception))
         return False
@@ -201,16 +200,15 @@ def ensure_save_directory() -> str | None:
     Returns:
         str | None: 有効な保存先フォルダの絶対パス。失敗した場合はNone
     """
-    # 保存先フォルダを設定から取得
-    from settings_manager import settings
+    import lib.notifier as notifier
+    import lib.settings as settings
 
+    # 保存先フォルダを設定から取得
     configured_directory = settings.get("save.directory")
     target_directory = expand_path(configured_directory) if configured_directory else ""
 
     if not target_directory:
         # パスが未設定または無効な場合はログに記録
-        from notifier import notifier
-
         notifier.log("保存先フォルダのパスが指定されていません。")
         return None
 
@@ -220,8 +218,6 @@ def ensure_save_directory() -> str | None:
             os.makedirs(target_directory, exist_ok=True)
     except OSError as exception:
         # フォルダ作成失敗時のエラーログ出力
-        from notifier import notifier
-
         notifier.log(f"保存先フォルダを作成できませんでした。\n{exception}")
         return None
 
@@ -244,12 +240,12 @@ def open_save_directory(icon=None, item=None) -> bool:
     target_directory = ensure_save_directory()
     if not target_directory:
         # フォルダ準備失敗時は設定やログ確認を促す通知を表示
-        from notifier import notifier, NotificationButton
+        import lib.notifier as notifier
 
         notifier.notify(
             title="保存先フォルダを開けませんでした。",
             message="保存先フォルダを準備できませんでした。詳細はログファイルを参照してください。",
-            buttons=[NotificationButton.OPEN_LOG, NotificationButton.OPEN_SETTINGS],
+            buttons=[notifier.NotificationButton.OPEN_LOG, notifier.NotificationButton.OPEN_SETTINGS],
         )
         return False
 

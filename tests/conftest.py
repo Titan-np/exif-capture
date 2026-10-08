@@ -5,7 +5,8 @@ pytest の共通設定およびテスト用 fixture 定義
 
 import os
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
+
 import pytest
 
 # src ディレクトリへのパスを解決し、インポート可能にする
@@ -14,10 +15,12 @@ if SOURCE_DIRECTORY_PATH not in sys.path:
     # 最優先で検索されるよう先頭に追加
     sys.path.insert(0, SOURCE_DIRECTORY_PATH)
 
-# notifier モジュール読み込み時の副作用（スタートメニューショートカットの作成・更新）を防止するため、
-# モジュール読み込み前に該当メソッドを空実装に差し替える
-with patch("notifier.Notifier._ensure_start_menu_shortcut", return_value=None):
-    import notifier
+# テスト実行時の副作用（スタートメニューショートカット更新など）を防止するフラグを設定
+os.environ["EXIF_CAPTURE_TESTING"] = "1"
+
+import lib.notifier as notifier
+import lib.settings as settings
+import lib.utils as utils
 
 
 @pytest.fixture(autouse=True)
@@ -33,11 +36,11 @@ def mock_notifier_actions(monkeypatch):
     dummy_log = MagicMock()
     dummy_error = MagicMock()
 
-    # シングルトンインスタンスのメソッドをモックに差し替え
-    monkeypatch.setattr(notifier.notifier, "notify", dummy_notify)
-    monkeypatch.setattr(notifier.notifier, "log", dummy_log)
-    monkeypatch.setattr(notifier.notifier, "error", dummy_error)
-    monkeypatch.setattr(notifier.notifier, "_send", MagicMock())
+    # モジュールの関数をモックに差し替え
+    monkeypatch.setattr(notifier, "notify", dummy_notify)
+    monkeypatch.setattr(notifier, "log", dummy_log)
+    monkeypatch.setattr(notifier, "error", dummy_error)
+    monkeypatch.setattr(notifier, "_send", MagicMock())
 
     return {
         "notify": dummy_notify,
@@ -49,27 +52,26 @@ def mock_notifier_actions(monkeypatch):
 @pytest.fixture
 def isolated_settings_manager(tmp_path, monkeypatch):
     """
-    実環境の settings.json に影響を与えないよう、一時ディレクトリ内で動作する SettingsManager を生成する fixture
+    実環境の settings.json に影響を与えないよう、一時ディレクトリ内で動作する lib.settings を初期化する fixture
 
     Args:
         tmp_path (pathlib.Path): pytest が提供する一時ディレクトリのパス
         monkeypatch (pytest.MonkeyPatch): pytest のモンキーパッチ用オブジェクト
 
     Returns:
-        SettingsManager: テスト用の独立した設定マネージャーインスタンス
+        module: テスト用の独立した設定モジュール (lib.settings)
     """
 
-    # utils.get_app_path の戻り先を一時ディレクトリ配下に変更
+    # lib.utils.get_app_path の戻り先を一時ディレクトリ配下に変更
     def mock_get_app_path(relative_path: str = ""):
         if relative_path:
             return str(tmp_path / relative_path)
         return str(tmp_path)
 
-    monkeypatch.setattr("utils.get_app_path", mock_get_app_path)
-    monkeypatch.setattr("settings_manager.get_app_path", mock_get_app_path)
+    monkeypatch.setattr(utils, "get_app_path", mock_get_app_path)
+    monkeypatch.setattr(settings.utils, "get_app_path", mock_get_app_path)
 
-    from settings_manager import SettingsManager
-
-    # テスト専用の新しいインスタンスを生成
-    settings_instance = SettingsManager()
-    return settings_instance
+    # テスト開始前にメモリ上の設定データをクリアし、一時ディレクトリ上で初期ロードを行う
+    settings._data.clear()
+    settings.load()
+    return settings
