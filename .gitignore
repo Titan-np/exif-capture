@@ -4,6 +4,11 @@ settings.json
 # ビルド時に生成するバージョン情報記載ファイル
 src/_version.py
 
+# ---- 以下、共通的な設定内容 ----
+
+# ローカルでの個人用メモ
+*.local.md
+
 # OS・クラウドが生成する隠しファイル
 Thumbs.db
 .DS_Store

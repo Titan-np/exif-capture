@@ -1,4 +1,5 @@
 import asyncio
+import ctypes
 import datetime
 import os
 import sys
@@ -94,6 +95,27 @@ def _ensure_start_menu_shortcut():
 
     except Exception as exception:
         log(f"スタートメニューショートカットの登録・更新に失敗しました。\n{exception}")
+
+
+# 通知の文面作成に使う Windows 標準ライブラリ（_pin_xml_library で読み込み、終了まで保持する）
+_xml_library = None
+
+
+def _pin_xml_library():
+    """
+    通知の文面作成に使う Windows 標準ライブラリ（msxml6.dll）を読み込み、アプリ終了まで手放さずに保持する
+
+    通知をしばらく出さずにいると、このライブラリが Windows によってメモリから外されることがある。
+    通知ライブラリ（win11toast）は外されたことに気付かず次の通知で使おうとするため、アプリが強制終了してしまう。
+    アプリ側でも読み込んだまま保持しておくことで、外されないようにする。
+    """
+    global _xml_library
+    try:
+        _xml_library = ctypes.WinDLL("msxml6.dll")
+    except OSError as exception:
+        # msxml6.dllが読み込めない環境では、以降で通知を出そうとした際に通知失敗エラーになる
+        # 撮影・保存には影響しないため、ログ出力のみ行いアプリは続行させる
+        log(f"通知用ライブラリ (msxml6.dll) の読み込みに失敗しました。\n{exception}")
 
 
 def _send(title, body=None, image=None, buttons=None, on_click=None):
@@ -301,3 +323,6 @@ def error(title, log_message: str):
 
 # モジュール読み込み時にスタートメニューショートカットを確認・作成する
 _ensure_start_menu_shortcut()
+
+# 最初の通知（起動通知）より前に、通知用ライブラリを保持しておく
+_pin_xml_library()
