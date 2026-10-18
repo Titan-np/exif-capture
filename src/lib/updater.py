@@ -1,6 +1,6 @@
 """
 GitHub Releases を参照して新しいバージョンの公開を検知し、Windows通知で知らせるモジュール
-起動時の自動確認と、設定画面などからの手動確認の両方から利用する
+起動時の自動確認と、設定画面の「今すぐ確認」ボタンの両方から利用する
 """
 
 import json
@@ -33,7 +33,7 @@ _VERSION_PATTERN = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$")
 
 
 class UpdateCheckMode(StrEnum):
-    """アップデート確認の対象範囲。設定ファイル（notify.updateCheck）に保存する値として使用する。"""
+    """アップデート確認の対象範囲。設定ファイル（update.checkMode）に保存する値として使用する。"""
 
     DISABLED = "disabled"
     STABLE = "stable"
@@ -113,54 +113,57 @@ def _fetch_releases():
         return json.loads(response.read().decode("utf-8"))
 
 
-def check_for_update(is_manual=False):
+def get_newer_release_tag(include_prerelease):
     """
-    新しいバージョンが公開されているかを確認し、公開されていればWindows通知で知らせる
-    メインプロセス・設定画面プロセスのどちらからも呼び出せる。通信を伴うため、UIから呼ぶ場合は別スレッドで実行する
+    実行中のバージョンより新しいリリースが公開されているかを確認する
+    結果の伝え方は呼び出し元（起動時の自動確認・設定画面）で異なるため、通知やログ出力は行わない
+    通信を伴うため、UIから呼ぶ場合は別スレッドで実行する
 
     Args:
-        is_manual (bool, optional): ユーザー操作による確認かどうか。
-            True の場合は設定が「確認しない」でも正式版を対象に確認する。
-            ただし通知の表示可否は各通知設定に従うため、「確認しない」設定では結果の通知は表示されない。
+        include_prerelease (bool): Pre-release（beta版）も対象に含めるかどうか
+
+    Returns:
+        str | None: 新しいバージョンのタグ名。新しいバージョンが無い場合は None
+
+    Raises:
+        ValueError: 実行中のバージョンを解析できない場合
+        Exception: リリース情報の取得に失敗した場合
+    """
+    # 1. 実行中のバージョンを解析（開発環境でタグが取得できない場合などは比較できないため中止）
+    current_version = parse_version(version.APP_VERSION)
+    if current_version is None:
+        raise ValueError(f"現在のバージョン ({version.APP_VERSION}) を解析できません。")
+
+    # 2. GitHub からリリース一覧を取得し、最新リリースと現在のバージョンを比較
+    latest_release = find_latest_release(_fetch_releases(), include_prerelease)
+    if latest_release is None or parse_version(latest_release["tag_name"]) <= current_version:
+        return None
+    return latest_release["tag_name"]
+
+
+def check_for_update():
+    """
+    起動時の自動確認として、新しいバージョンが公開されているかを設定に従って確認し、公開されていればWindows通知で知らせる
 
     Returns:
         str | None: 新しいバージョンのタグ名。新しいバージョンが無い場合や確認できなかった場合は None
     """
-    # 1. 設定から確認対象の範囲を決定（自動確認で「確認しない」の場合は通信せずに終了）
-    check_mode = settings.get("notify.updateCheck")
-    if check_mode == UpdateCheckMode.DISABLED and not is_manual:
-        return None
-    include_prerelease = check_mode == UpdateCheckMode.PRERELEASE
-
-    # 2. 実行中のバージョンを解析（開発環境でタグが取得できない場合などは比較できないため終了）
-    current_version = parse_version(version.APP_VERSION)
-    if current_version is None:
-        notifier.log(f"現在のバージョン ({version.APP_VERSION}) を解析できないため、アップデートの確認を中止しました。")
+    # 1. 設定から確認対象の範囲を決定（「確認しない」の場合は通信せずに終了）
+    check_mode = settings.get("update.checkMode")
+    if check_mode == UpdateCheckMode.DISABLED:
         return None
 
-    # 3. GitHub からリリース一覧を取得
+    # 2. 新しいバージョンを確認（オフライン環境で起動のたびに通知が出ないよう、失敗・最新時はログ出力のみとする）
     try:
-        releases = _fetch_releases()
+        latest_tag = get_newer_release_tag(include_prerelease=check_mode == UpdateCheckMode.PRERELEASE)
     except Exception as exception:
-        # 自動確認時はオフライン環境で起動のたびに通知が出ないよう、ログ出力のみとする
-        if is_manual:
-            notifier.error("アップデートの確認に失敗しました。", f"リリース情報の取得に失敗しました。\n{exception}")
-        else:
-            notifier.log(f"アップデートの確認に失敗しました。\n{exception}")
+        notifier.log(f"アップデートの確認に失敗しました。\n{exception}")
+        return None
+    if latest_tag is None:
+        notifier.log(f"最新版を使用しています。({version.APP_VERSION})")
         return None
 
-    # 4. 最新リリースと現在のバージョンを比較
-    latest_release = find_latest_release(releases, include_prerelease)
-    if latest_release is None or parse_version(latest_release["tag_name"]) <= current_version:
-        message = f"最新版を使用しています。({version.APP_VERSION})"
-        if is_manual:
-            notifier.notify(message, category=notifier.NotificationCategory.UPDATE)
-        else:
-            notifier.log(message)
-        return None
-
-    # 5. 新しいバージョンがあれば、リリースページを開くボタン付きで通知
-    latest_tag = latest_release["tag_name"]
+    # 3. 新しいバージョンがあれば、リリースページを開くボタン付きで通知
     notifier.notify(
         title=f"新しいバージョン ({latest_tag}) が公開されています。",
         message=f"現在のバージョン: {version.APP_VERSION}",

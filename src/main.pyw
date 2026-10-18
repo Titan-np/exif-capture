@@ -85,6 +85,9 @@ def _launch_application():
     """
     global _hotkey_manager, _tray_icon
 
+    # 起動時の最初のログ出力より前に、肥大化したログファイルを旧世代へ切り替える
+    notifier.rotate_log_file()
+
     # 通知領域に常駐させるアイコンと右クリックメニューを設定する
     tray_menu = pystray.Menu(
         pystray.MenuItem("設定を開く", settings_window.open_settings_window, default=True),

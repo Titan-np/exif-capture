@@ -282,7 +282,7 @@ class TestSettingsManagerIO:
             "notify.onCapture": False,
             "notify.onAppEvent": True,
             "notify.onError": False,
-            "notify.updateCheck": "prerelease",
+            "update.checkMode": "prerelease",
         }
 
         # 設定ファイルを事前作成
@@ -300,7 +300,7 @@ class TestSettingsManagerIO:
         assert settings.get("notify.onCapture") is False
         assert settings.get("notify.onAppEvent") is True
         assert settings.get("notify.onError") is False
-        assert settings.get("notify.updateCheck") == "prerelease"
+        assert settings.get("update.checkMode") == "prerelease"
 
     def test_load_migrates_old_key_names(self, isolated_settings_manager):
         """旧バージョンのキー名が設定ファイルに含まれている場合、新キー名へ自動移行されることを検証する"""
@@ -309,6 +309,7 @@ class TestSettingsManagerIO:
             "save_directory": "D:\\LegacyDirectory",
             "filename_preset": "{title}_{timestamp}.png",
             "embed_datetime_metadata": False,
+            "notify.updateCheck": "prerelease",
         }
 
         # 旧形式の設定ファイルを作成
@@ -323,12 +324,14 @@ class TestSettingsManagerIO:
         assert settings.get("save.directory") == "D:\\LegacyDirectory"
         assert settings.get("save.filenamePreset") == "{title}_{timestamp}.png"
         assert settings.get("save.embedDatetimeMetadata") is False
+        assert settings.get("update.checkMode") == "prerelease"
 
         # ファイルへ保存され、旧キーが除去されていることを確認
         with open(settings._get_settings_path(), "r", encoding="utf-8") as file:
             migrated_content = json.load(file)
             assert "trigger_shortcut" not in migrated_content
             assert "capture.triggerShortcut" in migrated_content
+            assert "notify.updateCheck" not in migrated_content
 
     def test_load_splits_old_notification_key_into_categories(self, isolated_settings_manager):
         """旧キー capture.enableSystemNotification の値が、種別ごとの通知設定3項目すべてへ引き継がれることを検証する"""

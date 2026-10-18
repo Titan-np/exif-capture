@@ -1,7 +1,9 @@
 import ctypes
 import multiprocessing
 import os
+import threading
 import tkinter.filedialog as filedialog
+import webbrowser
 from typing import NamedTuple
 
 import customtkinter as ctk
@@ -15,6 +17,7 @@ import lib.settings as settings
 import lib.startup as startup
 import lib.updater as updater
 import lib.utils as utils
+import lib.version as version
 
 # UIフォント
 _SYS_FONT = ("Meiryo UI", 13)
@@ -30,7 +33,8 @@ _WARNING_TEXT_COLOR = "#FFA94D"
 _TAB_NAMES_BY_KEY_PREFIX = {
     "capture": "撮影",
     "save": "保存",
-    "notify": "全般",
+    "notify": "Windows機能",
+    "update": "アップデート",
 }
 
 # アップデート確認の対象範囲の表示文言（保存値 → 表示文言）
@@ -405,7 +409,8 @@ class SettingsWindow(ctk.CTk):
         tab_view.pack(fill="both", expand=True, padx=20, pady=(10, 0))
         capture_tab = tab_view.add(_TAB_NAMES_BY_KEY_PREFIX["capture"])
         save_tab = tab_view.add(_TAB_NAMES_BY_KEY_PREFIX["save"])
-        general_tab = tab_view.add(_TAB_NAMES_BY_KEY_PREFIX["notify"])
+        windows_tab = tab_view.add(_TAB_NAMES_BY_KEY_PREFIX["notify"])
+        update_tab = tab_view.add(_TAB_NAMES_BY_KEY_PREFIX["update"])
 
         # 「撮影」タブの設定項目を追加
         self._add_shortcut_field(capture_tab)
@@ -416,13 +421,15 @@ class SettingsWindow(ctk.CTk):
         self._add_filename_preset_field(save_tab)
         self._add_metadata_toggle_field(save_tab)
 
-        # 「全般」タブの設定項目を、見出しで区切って追加
-        self._add_section_heading(general_tab, "スタートアップ")
-        self._add_startup_field(general_tab)
-        self._add_section_heading(general_tab, "Windows通知")
-        self._add_notification_toggle_fields(general_tab)
-        self._add_section_heading(general_tab, "アップデート")
-        self._add_update_check_mode_field(general_tab)
+        # 「Windows機能」タブの設定項目を、見出しで区切って追加
+        self._add_section_heading(windows_tab, "スタートアップ")
+        self._add_startup_field(windows_tab)
+        self._add_section_heading(windows_tab, "Windows通知")
+        self._add_notification_toggle_fields(windows_tab)
+
+        # 「アップデート」タブの設定項目を追加（タブ名と重複するため見出しは置かない）
+        self._add_update_check_mode_field(update_tab)
+        self._add_update_check_now_field(update_tab)
 
         # 初期表示時にバリデーションを実行する
         self._run_validation()
@@ -707,7 +714,7 @@ class SettingsWindow(ctk.CTk):
 
     def _add_update_check_mode_field(self, tab_frame):
         """アップデート確認の対象範囲を選ぶドロップダウンを追加する"""
-        key = "notify.updateCheck"
+        key = "update.checkMode"
 
         # 現在の設定値を表示文言に変換（未定義の値の場合はデフォルトの「正式版のみ」を表示）
         initial_label = _UPDATE_CHECK_MODE_LABELS.get(settings.get(key), _UPDATE_CHECK_MODE_LABELS[updater.UpdateCheckMode.STABLE])
@@ -722,6 +729,57 @@ class SettingsWindow(ctk.CTk):
             .add_option_menu(values=list(_UPDATE_CHECK_MODE_LABELS.values()), initial_value=initial_label)
             .build()
         )
+
+    def _add_update_check_now_field(self, tab_frame):
+        """
+        新しいバージョンをその場で確認し、結果を画面内に表示する項目を追加する
+        「確認しない」設定や通知オフでも結果が分かるよう、Windows通知ではなく画面内のラベルに表示する
+        """
+
+        # 確認範囲は保存前でも画面上の選択値を使い、通信で画面が固まらないよう別スレッドで確認する
+        def start_check():
+            include_prerelease = self._get_widget_value(self._setting_items["update.checkMode"]) == updater.UpdateCheckMode.PRERELEASE
+            setting_row.widget.configure(text="確認しています...", text_color=default_text_color)
+            setting_row.button.configure(state="disabled")
+            threading.Thread(target=run_check, args=(include_prerelease,), daemon=True).start()
+
+        # 別スレッドで確認を実行し、結果の表示はメインスレッドに戻して行う
+        def run_check(include_prerelease):
+            try:
+                result = updater.get_newer_release_tag(include_prerelease)
+            except Exception as exception:
+                result = exception
+            try:
+                self.after(0, lambda: show_result(result))
+            except Exception:
+                # 確認中に画面が閉じられた場合は表示先が無いため何もしない（RuntimeError / TclError のどちらにもなり得る）
+                pass
+
+        # 確認結果に応じてラベルとボタンを切り替える（新版ありの場合はボタンでリリースページを開けるようにする）
+        def show_result(result):
+            if isinstance(result, Exception):
+                # 例外メッセージは長くボタンを押し出してしまうため、詳細はログに出力する
+                notifier.log(f"アップデートの確認に失敗しました。\n{result}")
+                setting_row.widget.configure(text="確認に失敗しました。(詳細はログを参照)", text_color=_ERROR_TEXT_COLOR)
+                setting_row.button.configure(state="normal")
+            elif result is None:
+                setting_row.widget.configure(text=f"最新版を使用しています。({version.APP_VERSION})")
+                setting_row.button.configure(state="normal")
+            else:
+                setting_row.widget.configure(text=f"{result} が公開されています。")
+                setting_row.button.configure(
+                    state="normal", text="リリースページを開く", command=lambda: webbrowser.open(constants.RELEASES_PAGE_URL)
+                )
+
+        # 適用・保存の対象外とするため、_setting_items には登録しない
+        setting_row = (
+            self._create_row_builder(tab_frame=tab_frame, key="updateCheckNow")
+            .add_label(text=f"現在のバージョン: {version.APP_VERSION}")
+            .add_button(text="今すぐ確認", width=140, command=start_check)
+            .build()
+        )
+        # 失敗表示のエラー色から戻すため、既定の文字色を控えておく
+        default_text_color = setting_row.widget.cget("text_color")
 
     def _build_button_area(self):
         """
@@ -842,7 +900,7 @@ class SettingsWindow(ctk.CTk):
                 return 100
 
         # アップデート確認の対象範囲は表示文言から保存値に変換する（該当しない場合はバリデーションでエラーにするため元の値を返す）
-        if setting_row.key == "notify.updateCheck":
+        if setting_row.key == "update.checkMode":
             for mode, label in _UPDATE_CHECK_MODE_LABELS.items():
                 if label == value:
                     return mode.value

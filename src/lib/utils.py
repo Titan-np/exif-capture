@@ -173,8 +173,10 @@ def open_log_file(icon=None, item=None) -> bool:
     Returns:
         bool: ファイルを開く処理に成功した場合はTrue、失敗した場合はFalse
     """
+    import lib.notifier as notifier
+
     # ログファイルの絶対パスを取得
-    log_file_path = paths.get_app_path(os.path.join("logs", "app.log"))
+    log_file_path = paths.get_app_path(os.path.join(notifier.LOG_DIRECTORY_NAME, notifier.LOG_FILE_NAME))
 
     try:
         # ログフォルダおよびログファイルが存在しない場合は自動作成
@@ -187,8 +189,6 @@ def open_log_file(icon=None, item=None) -> bool:
                 pass
     except OSError as exception:
         # フォルダ作成やファイル作成失敗時のエラーハンドリング
-        import lib.notifier as notifier
-
         notifier.error("ログファイルを作成できませんでした。", str(exception))
         return False
 

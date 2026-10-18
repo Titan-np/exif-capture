@@ -93,32 +93,59 @@ class TestFindLatestRelease:
         assert updater.find_latest_release([_make_release("v1.2.0-beta.1", prerelease=True)], include_prerelease=False) is None
 
 
+@pytest.fixture
+def update_environment(monkeypatch, isolated_settings_manager):
+    """
+    現在のバージョンを v1.1.3 に固定し、リリース一覧の取得をモック化する fixture
+
+    Returns:
+        MagicMock: _fetch_releases のモック（return_value / side_effect でレスポンスを指定する）
+    """
+    monkeypatch.setattr(updater.version, "APP_VERSION", "v1.1.3")
+    fetch_releases_mock = MagicMock(
+        return_value=[
+            _make_release("v1.2.0-beta.1", prerelease=True),
+            _make_release("v1.1.3"),
+        ]
+    )
+    monkeypatch.setattr(updater, "_fetch_releases", fetch_releases_mock)
+    return fetch_releases_mock
+
+
+class TestGetNewerReleaseTag:
+    """
+    新しいバージョンの有無の確認（get_newer_release_tag）に関するテストクラス
+    """
+
+    def test_returns_newer_prerelease_only_when_included(self, update_environment):
+        """新しいbeta版は、Pre-releaseを対象に含めた場合のみ返ることを検証する"""
+        assert updater.get_newer_release_tag(include_prerelease=True) == "v1.2.0-beta.1"
+        assert updater.get_newer_release_tag(include_prerelease=False) is None
+
+    def test_raises_on_fetch_failure(self, update_environment):
+        """リリース一覧の取得に失敗した場合、例外がそのまま送出されることを検証する"""
+        update_environment.side_effect = OSError("network unreachable")
+
+        with pytest.raises(OSError):
+            updater.get_newer_release_tag(include_prerelease=False)
+
+    def test_raises_without_fetch_when_current_version_unparsable(self, update_environment, monkeypatch):
+        """現在のバージョンを解析できない場合、リリース一覧を取得せずに ValueError を送出することを検証する"""
+        monkeypatch.setattr(updater.version, "APP_VERSION", updater.version.FALLBACK_VERSION)
+
+        with pytest.raises(ValueError):
+            updater.get_newer_release_tag(include_prerelease=False)
+        update_environment.assert_not_called()
+
+
 class TestCheckForUpdate:
     """
-    設定に応じたアップデート確認と通知（check_for_update）に関するテストクラス
+    起動時の自動確認として、設定に応じたアップデート確認と通知（check_for_update）に関するテストクラス
     """
-
-    @pytest.fixture
-    def update_environment(self, monkeypatch, isolated_settings_manager):
-        """
-        現在のバージョンを v1.1.3 に固定し、リリース一覧の取得をモック化する fixture
-
-        Returns:
-            MagicMock: _fetch_releases のモック（return_value / side_effect でレスポンスを指定する）
-        """
-        monkeypatch.setattr(updater.version, "APP_VERSION", "v1.1.3")
-        fetch_releases_mock = MagicMock(
-            return_value=[
-                _make_release("v1.2.0-beta.1", prerelease=True),
-                _make_release("v1.1.3"),
-            ]
-        )
-        monkeypatch.setattr(updater, "_fetch_releases", fetch_releases_mock)
-        return fetch_releases_mock
 
     def test_notifies_when_newer_prerelease_exists(self, update_environment, mock_notifier_actions):
         """「ベータ版も確認する」設定で新しいbeta版がある場合、リリースページボタン付きで通知されることを検証する"""
-        updater.settings.set("notify.updateCheck", "prerelease")
+        updater.settings.set("update.checkMode", "prerelease")
 
         assert updater.check_for_update() == "v1.2.0-beta.1"
         notify_arguments = mock_notifier_actions["notify"].call_args.kwargs
@@ -128,39 +155,23 @@ class TestCheckForUpdate:
 
     def test_does_not_notify_when_up_to_date(self, update_environment, mock_notifier_actions):
         """「正式版のみ確認する」設定で正式版が最新の場合、自動確認では通知されないことを検証する"""
-        updater.settings.set("notify.updateCheck", "stable")
+        updater.settings.set("update.checkMode", "stable")
 
         assert updater.check_for_update() is None
         mock_notifier_actions["notify"].assert_not_called()
 
     def test_skips_fetch_when_disabled(self, update_environment, mock_notifier_actions):
         """「確認しない」設定の自動確認では、リリース一覧を取得しないことを検証する"""
-        updater.settings.set("notify.updateCheck", "disabled")
+        updater.settings.set("update.checkMode", "disabled")
 
         assert updater.check_for_update() is None
         update_environment.assert_not_called()
 
-    def test_manual_check_runs_as_stable_when_disabled(self, update_environment, mock_notifier_actions):
-        """手動確認では「確認しない」設定でも正式版を対象に確認し、最新版である旨を通知することを検証する"""
-        updater.settings.set("notify.updateCheck", "disabled")
-
-        assert updater.check_for_update(is_manual=True) is None
-        update_environment.assert_called_once()
-        assert "最新版" in mock_notifier_actions["notify"].call_args.args[0]
-
-    def test_fetch_failure_notifies_only_on_manual_check(self, update_environment, mock_notifier_actions):
-        """取得失敗時、自動確認ではログのみ、手動確認ではエラー通知が行われることを検証する"""
+    def test_fetch_failure_logs_without_notification(self, update_environment, mock_notifier_actions):
+        """取得失敗時、オフライン環境で起動のたびに通知が出ないよう、通知せずログ出力のみ行うことを検証する"""
         update_environment.side_effect = OSError("network unreachable")
 
         assert updater.check_for_update() is None
+        mock_notifier_actions["notify"].assert_not_called()
         mock_notifier_actions["error"].assert_not_called()
-
-        assert updater.check_for_update(is_manual=True) is None
-        mock_notifier_actions["error"].assert_called_once()
-
-    def test_skips_when_current_version_unparsable(self, update_environment, monkeypatch):
-        """現在のバージョンを解析できない場合、リリース一覧を取得しないことを検証する"""
-        monkeypatch.setattr(updater.version, "APP_VERSION", updater.version.FALLBACK_VERSION)
-
-        assert updater.check_for_update() is None
-        update_environment.assert_not_called()
+        assert "失敗" in mock_notifier_actions["log"].call_args.args[0]

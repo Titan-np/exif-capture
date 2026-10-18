@@ -13,9 +13,17 @@ import lib.constants as constants
 import lib.paths as paths
 import lib.utils as utils
 
+# ログファイルの保存先（アプリケーションフォルダからの相対パス）
+LOG_DIRECTORY_NAME = "logs"
+LOG_FILE_NAME = "app.log"
+OLD_LOG_FILE_NAME = "app.log.old"
+
 # ログファイル書き込み時のリトライ設定（マルチプロセス環境等でのファイル競合対策）
 LOG_WRITE_MAX_RETRY_COUNT = 3
 LOG_WRITE_RETRY_INTERVAL_SECONDS = 0.05
+
+# ログファイルの切り替え基準サイズ（超過時は起動時に旧世代へ退避し、最大でこの約2倍の容量に収める）
+LOG_FILE_MAX_BYTES = 1 * 1024 * 1024
 
 
 # 通知アクションボタンの種別
@@ -36,7 +44,7 @@ class NotificationCategory(StrEnum):
     CAPTURE = "notify.onCapture"
     APP_EVENT = "notify.onAppEvent"
     ERROR = "notify.onError"
-    UPDATE = "notify.updateCheck"
+    UPDATE = "update.checkMode"
 
 
 def _ensure_start_menu_shortcut():
@@ -150,6 +158,30 @@ def _send(title, body=None, image=None, buttons=None, on_click=None):
     future.add_done_callback(_log_failure)
 
 
+def rotate_log_file():
+    """
+    ログファイルが基準サイズを超えている場合に旧世代ファイルへ切り替える
+    書き込みごとの判定は別プロセスがファイルを開いている間にリネームが失敗しやすいため、アプリ起動時に1回だけ呼び出す
+    """
+    log_file_path = paths.get_app_path(os.path.join(LOG_DIRECTORY_NAME, LOG_FILE_NAME))
+    old_log_file_path = paths.get_app_path(os.path.join(LOG_DIRECTORY_NAME, OLD_LOG_FILE_NAME))
+
+    # 1. ログファイルが存在しない、または基準サイズ以下なら切り替えない
+    if not os.path.exists(log_file_path) or os.path.getsize(log_file_path) <= LOG_FILE_MAX_BYTES:
+        return
+
+    # 2. 旧世代ファイルへ置き換える（os.replace は既存の旧世代を上書きするため、2世代のみ保持される）
+    try:
+        os.replace(log_file_path, old_log_file_path)
+    except OSError as exception:
+        # 切り替えに失敗しても追記は継続できるため、起動処理は止めない
+        log(f"ログファイルの切り替えに失敗しました。\n{exception}")
+        return
+
+    # 3. 新しいログファイルの先頭に切り替えた旨を記録
+    log(f"ログファイルが {LOG_FILE_MAX_BYTES // 1024}KB を超えたため、旧ログを {os.path.basename(old_log_file_path)} に退避しました。")
+
+
 def log(message: str):
     """
     コンソールおよびログファイルに日時付きでログを出力する
@@ -175,11 +207,11 @@ def log(message: str):
 
     try:
         # ログファイルの保存先フォルダを作成
-        log_directory = paths.get_app_path("logs")
+        log_directory = paths.get_app_path(LOG_DIRECTORY_NAME)
         if not os.path.exists(log_directory):
             os.makedirs(log_directory, exist_ok=True)
 
-        log_file_path = os.path.join(log_directory, "app.log")
+        log_file_path = os.path.join(log_directory, LOG_FILE_NAME)
 
         # 書き込みの競合を防ぐためリトライしつつ書き込む
         for attempt_count in range(1, LOG_WRITE_MAX_RETRY_COUNT + 1):

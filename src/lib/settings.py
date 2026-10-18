@@ -27,7 +27,7 @@ _DEFAULT_SETTINGS = {
     "notify.onCapture": True,
     "notify.onAppEvent": True,
     "notify.onError": True,
-    "notify.updateCheck": "stable",
+    "update.checkMode": "stable",
 }
 
 # 現キー名に対する旧キー名リスト（設定ファイル読み込み時に旧キー名があれば移行する）
@@ -39,6 +39,7 @@ _MIGRATION_MAP = {
     "notify.onCapture": ["capture.enableSystemNotification"],
     "notify.onAppEvent": ["capture.enableSystemNotification"],
     "notify.onError": ["capture.enableSystemNotification"],
+    "update.checkMode": ["notify.updateCheck"],
 }
 
 # 設定キーに対するバリデーションルール定義（キー → 検証関数名のリスト）
@@ -57,7 +58,7 @@ _VALIDATION_RULES = {
         "_validate_filename_chars",
         "_validate_overwrite_risk",
     ],
-    "notify.updateCheck": [
+    "update.checkMode": [
         "_validate_update_check_mode",
     ],
 }
