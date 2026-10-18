@@ -11,11 +11,19 @@ import lib.constants as constants
 import lib.hotkey as hotkey
 import lib.notifier as notifier
 import lib.settings as settings
+import lib.updater as updater
 import lib.utils as utils
 
 # UIフォント
 _SYS_FONT = ("Meiryo UI", 13)
 _HINT_FONT = ("Meiryo UI", 11)
+
+# アップデート確認の対象範囲の表示文言（保存値 → 表示文言）
+_UPDATE_CHECK_MODE_LABELS = {
+    updater.UpdateCheckMode.DISABLED: "確認しない",
+    updater.UpdateCheckMode.STABLE: "正式版のみ確認する",
+    updater.UpdateCheckMode.PRERELEASE: "ベータ版も確認する",
+}
 
 # 開いている設定画面のプロセス
 _settings_process = None
@@ -306,7 +314,7 @@ class SettingsWindow(ctk.CTk):
 
         # ウィンドウのタイトル・サイズを設定
         self.title(f"{constants.APP_NAME} 設定")
-        self.geometry("500x580")
+        self.geometry("500x680")
         self.resizable(False, False)
 
         # ウィンドウアイコン・タスクバーアイコンの設定
@@ -336,6 +344,7 @@ class SettingsWindow(ctk.CTk):
         self._add_filename_preset_field()
         self._add_metadata_toggle_field()
         self._add_windows_notification_toggle_field()
+        self._add_update_check_mode_field()
 
         # 初期表示時にバリデーションを実行する
         self._run_validation()
@@ -530,6 +539,19 @@ class SettingsWindow(ctk.CTk):
             .build()
         )
 
+    def _add_update_check_mode_field(self):
+        """アップデート確認の対象範囲を選ぶドロップダウンを追加する"""
+        key = "notify.updateCheck"
+
+        # 現在の設定値を表示文言に変換（未定義の値の場合はデフォルトの「正式版のみ」を表示）
+        initial_label = _UPDATE_CHECK_MODE_LABELS.get(settings.get(key), _UPDATE_CHECK_MODE_LABELS[updater.UpdateCheckMode.STABLE])
+
+        self._setting_items[key] = (
+            self._create_row_builder(key=key, label_text="アップデートの確認:")
+            .add_option_menu(values=list(_UPDATE_CHECK_MODE_LABELS.values()), initial_value=initial_label)
+            .build()
+        )
+
     def _build_button_area(self):
         """
         設定画面に適用・保存・キャンセルの各操作ボタンを配置する
@@ -581,8 +603,8 @@ class SettingsWindow(ctk.CTk):
             if setting_row.error_label is None:
                 continue
 
-            # ウィジェットから現在の値を取得してバリデーション実行
-            value = setting_row.widget.get()
+            # ウィジェットから現在の値を保存値の形式で取得してバリデーション実行
+            value = self._get_widget_value(setting_row)
             error = settings.validate(key, value)
 
             if error:
@@ -598,23 +620,45 @@ class SettingsWindow(ctk.CTk):
         if self._button_save:
             self._button_save.configure(state=state)
 
+    def _get_widget_value(self, setting_row):
+        """
+        設定項目のウィジェットから現在の値を取得し、設定ファイルに保存する形式へ変換する
+        バリデーションと保存で同じ値を扱うため、表示文言から保存値への変換をここに集約する
+
+        Args:
+            setting_row (SettingRow): 対象の設定項目行
+
+        Returns:
+            設定ファイルに保存する形式の値
+        """
+        value = setting_row.widget.get()
+
+        # CTkSwitch の場合は 0/1 が返るため bool に変換する
+        if isinstance(setting_row.widget, ctk.CTkSwitch):
+            return bool(value)
+
+        # 音量設定はパーセント文字列から整数に変換する
+        if setting_row.key == "capture.soundVolume":
+            try:
+                return int(value.split("%")[0])
+            except ValueError:
+                return 100
+
+        # アップデート確認の対象範囲は表示文言から保存値に変換する（該当しない場合はバリデーションでエラーにするため元の値を返す）
+        if setting_row.key == "notify.updateCheck":
+            for mode, label in _UPDATE_CHECK_MODE_LABELS.items():
+                if label == value:
+                    return mode.value
+
+        return value
+
     def _apply_settings(self):
         """
         現在の入力を設定ファイルに保存する。画面はそのまま維持される
         """
-        # UI上の全ての入力値を settings オブジェクトに反映させる
+        # UI上の全ての入力値を保存値の形式に変換して settings オブジェクトに反映させる
         for key, setting_row in self._setting_items.items():
-            value = setting_row.widget.get()
-            # CTkSwitch の場合は 0/1 が返るため bool に変換する
-            if isinstance(setting_row.widget, ctk.CTkSwitch):
-                value = bool(value)
-            # CTkOptionMenu（音量設定）の場合はパーセント文字列から整数に変換する
-            elif isinstance(setting_row.widget, ctk.CTkOptionMenu) and key == "capture.soundVolume":
-                try:
-                    value = int(value.split("%")[0])
-                except ValueError:
-                    value = 100
-            settings.set(key, value)
+            settings.set(key, self._get_widget_value(setting_row))
 
         # 設定ファイルに保存する
         settings.save()

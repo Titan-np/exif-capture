@@ -8,6 +8,7 @@ import capture
 import lib.constants as constants
 import lib.hotkey as hotkey
 import lib.notifier as notifier
+import lib.updater as updater
 import lib.utils as utils
 import lib.version as version
 import settings_window
@@ -158,6 +159,9 @@ def _launch_application():
     # 設定変更通知を監視するスレッドを起動
     update_watcher_thread = threading.Thread(target=_watch_update_event, daemon=True)
     update_watcher_thread.start()
+
+    # 新しいバージョンが公開されていないかを、起動から一定時間後に確認する
+    updater.start_startup_check()
 
     # 通知領域での常駐を開始してメインループを起動する（起動通知は登録成否コールバック内で行う）
     _tray_icon.run()

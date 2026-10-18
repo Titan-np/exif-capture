@@ -5,6 +5,7 @@ import os
 import sys
 import threading
 import time
+import webbrowser
 from enum import StrEnum
 
 from win11toast import toast_async
@@ -25,6 +26,7 @@ class NotificationButton(StrEnum):
     OPEN_FOLDER = "保存先フォルダを開く"
     OPEN_LOG = "ログファイルを開く"
     OPEN_SETTINGS = "設定画面を開く"
+    OPEN_RELEASE_PAGE = "リリースページを開く"
 
 
 def _ensure_start_menu_shortcut():
@@ -282,6 +284,9 @@ def notify(
                     from settings_window import open_settings_window
 
                     open_settings_window()
+                # 「リリースページを開く」
+                elif clicked_action == NotificationButton.OPEN_RELEASE_PAGE:
+                    webbrowser.open(constants.RELEASES_PAGE_URL)
             except OSError as exception:
                 log(f"通知ボタンのアクション実行に失敗しました。\n{exception}")
 

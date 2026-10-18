@@ -20,6 +20,7 @@ _DEFAULT_SETTINGS = {
     "save.directory": "~\\Pictures\\Screenshots",
     "save.filenamePreset": "{timestamp}_{title}.png",
     "save.embedDatetimeMetadata": True,
+    "notify.updateCheck": "stable",
 }
 
 # 現キー名に対する旧キー名リスト（設定ファイル読み込み時に旧キー名があれば移行する）
@@ -44,6 +45,9 @@ _VALIDATION_RULES = {
         "_validate_not_empty",
         "_validate_preset_placeholders",
         "_validate_filename_chars",
+    ],
+    "notify.updateCheck": [
+        "_validate_update_check_mode",
     ],
 }
 
@@ -403,6 +407,24 @@ def _validate_preset_placeholders(value):
         # 波括弧の対応ミスや不正な書式指定子
         return "書式が不正です。波括弧 { } の対応を確認してください。"
 
+    return None
+
+
+def _validate_update_check_mode(value):
+    """
+    アップデート確認の対象範囲が、定義済みの値（disabled / stable / prerelease）のいずれかであるかを検証する
+
+    Args:
+        value: 検証する値
+
+    Returns:
+        str | None: エラーメッセージ（未定義の値の場合はメッセージ、問題なければ None）
+    """
+    # 循環インポートを防ぐため関数内でインポート
+    import lib.updater as updater
+
+    if value not in [mode.value for mode in updater.UpdateCheckMode]:
+        return "選択肢から選んでください。"
     return None
 
 
