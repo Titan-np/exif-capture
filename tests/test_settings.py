@@ -19,17 +19,17 @@ class TestValidation:
         # 空文字列の検証
         empty_result = settings._validate_not_empty("")
         assert empty_result is not None
-        assert "必須項目です" in empty_result
+        assert "必須項目です" in empty_result.message
 
         # 空白のみの文字列の検証
         whitespace_result = settings._validate_not_empty("   ")
         assert whitespace_result is not None
-        assert "必須項目です" in whitespace_result
+        assert "必須項目です" in whitespace_result.message
 
         # None の検証
         none_result = settings._validate_not_empty(None)
         assert none_result is not None
-        assert "必須項目です" in none_result
+        assert "必須項目です" in none_result.message
 
     def test_validate_not_empty_accepts_valid_string(self):
         """値が入力されている場合に正常終了（None返却）することを検証する"""
@@ -44,21 +44,21 @@ class TestValidation:
             test_path = f"C:\\Screenshots\\test{character}dir"
             validation_error = settings._validate_path_chars(test_path)
             assert validation_error is not None
-            assert "フォルダパスに使用できない文字が含まれています" in validation_error
+            assert "フォルダパスに使用できない文字が含まれています" in validation_error.message
 
     def test_validate_path_chars_rejects_invalid_colon(self):
         """ドライブレター以外にコロンが含まれている場合に拒否されることを検証する"""
         invalid_path = "C:\\Screenshots:extra\\folder"
         validation_error = settings._validate_path_chars(invalid_path)
         assert validation_error is not None
-        assert "フォルダパスに使用できない文字が含まれています: :" in validation_error
+        assert "フォルダパスに使用できない文字が含まれています: :" in validation_error.message
 
     def test_validate_path_chars_rejects_invalid_drive_format(self):
         """不正なドライブ名（英字以外など）が指定された場合に拒否されることを検証する"""
         invalid_drive_path = "1:\\Screenshots"
         validation_error = settings._validate_path_chars(invalid_drive_path)
         assert validation_error is not None
-        assert "ドライブ指定が不正です" in validation_error
+        assert "ドライブ指定が不正です" in validation_error.message
 
     def test_validate_path_chars_accepts_valid_paths(self):
         """正常なフォルダパス（絶対パス・チルダ・環境変数）が承認されることを検証する"""
@@ -79,7 +79,7 @@ class TestValidation:
             test_preset = f"shot_{character}_{{timestamp}}.png"
             validation_error = settings._validate_filename_chars(test_preset)
             assert validation_error is not None
-            assert "ファイル名に使用できない文字が含まれています" in validation_error
+            assert "ファイル名に使用できない文字が含まれています" in validation_error.message
 
     def test_validate_filename_chars_ignores_placeholder_brackets(self):
         """プレースホルダ内部の書式指定子に含まれる記号（コロンなど）が誤検知されないことを検証する"""
@@ -99,12 +99,15 @@ class TestValidation:
         assert settings._validate_shortcut_format("ctrl+") is not None
 
     def test_validate_preset_placeholders_accepts_allowed_keys(self):
-        """許可されているプレースホルダ（timestamp, title）が承認されることを検証する"""
+        """許可されているプレースホルダ（timestamp, title, index, dup）が承認されることを検証する"""
         valid_preset_list = [
             "{timestamp}_{title}.png",
             "{timestamp:%Y-%m-%d}_{title}.png",
             "capture_{title}.png",
             "screenshot_{timestamp}.png",
+            "shot_{index:03}.png",
+            "{title}{dup}.png",
+            "{title}{dup:_%02d:1}.png",
         ]
         for valid_preset in valid_preset_list:
             validation_error = settings._validate_preset_placeholders(valid_preset)
@@ -115,7 +118,7 @@ class TestValidation:
         unknown_key_preset = "{unknown_key}_{title}.png"
         validation_error = settings._validate_preset_placeholders(unknown_key_preset)
         assert validation_error is not None
-        assert "使用できないプレースホルダです: {unknown_key}" in validation_error
+        assert "使用できないプレースホルダです: {unknown_key}" in validation_error.message
 
     def test_validate_preset_placeholders_rejects_unbalanced_braces(self):
         """波括弧の対応が取れていない不正な書式が拒否されることを検証する"""
@@ -128,7 +131,43 @@ class TestValidation:
         for unbalanced_preset in unbalanced_preset_list:
             validation_error = settings._validate_preset_placeholders(unbalanced_preset)
             assert validation_error is not None
-            assert "書式が不正です" in validation_error or "使用できないプレースホルダ" in validation_error
+            assert "書式が不正です" in validation_error.message or "使用できないプレースホルダ" in validation_error.message
+
+    def test_validate_preset_placeholders_rejects_invalid_duplicate_format(self):
+        """{dup} のテンプレートに番号の変換指定が無い場合や、開始番号が整数でない場合に拒否されることを検証する"""
+        invalid_preset_list = [
+            "{title}{dup:_copy}.png",
+            "{title}{dup:_%d:one}.png",
+        ]
+        for invalid_preset in invalid_preset_list:
+            validation_error = settings._validate_preset_placeholders(invalid_preset)
+            assert validation_error is not None
+            assert "書式が不正です" in validation_error.message
+
+    def test_validate_overwrite_risk_warns_without_unique_placeholder(self):
+        """{index} / {dup} / %f 付き {timestamp} のいずれも無いプリセットで警告が返ることを検証する"""
+        risky_preset_list = [
+            "{timestamp}_{title}.png",
+            "{timestamp:%Y%m%d_%H%M%S}_{title}.png",
+            "index_dup_%f.png",  # 固定文字列中の語や記号は対象外
+        ]
+        for risky_preset in risky_preset_list:
+            validation_result = settings._validate_overwrite_risk(risky_preset)
+            assert validation_result.level == settings.ValidationLevel.WARNING
+
+    def test_validate_overwrite_risk_accepts_unique_placeholder(self):
+        """{index} / {dup} / %f 付き {timestamp} のいずれかがあるプリセットでは警告しないことを検証する"""
+        safe_preset_list = [
+            "{timestamp}_{title}{dup}.png",
+            "{title}_{index:03}.png",
+            "{timestamp:%Y%m%d_%H%M%S_%f}_{title}.png",
+        ]
+        for safe_preset in safe_preset_list:
+            assert settings._validate_overwrite_risk(safe_preset) is None
+
+    def test_default_preset_has_no_validation_result(self):
+        """デフォルトのファイル名プリセットでエラー・警告が出ないことを検証する"""
+        assert settings.validate("save.filenamePreset", settings._DEFAULT_SETTINGS["save.filenamePreset"]) is None
 
     def test_validate_all_returns_errors_for_invalid_entries(self):
         """複数の設定項目に対して一括検証を実行し、エラー項目のみ辞書として返却されることを検証する"""
@@ -137,11 +176,81 @@ class TestValidation:
             "save.directory": "C:\\Screenshots",  # 正常
             "save.filenamePreset": "test<{title}>.png",  # 禁止文字を含むためエラー
         }
-        validation_error_dictionary = settings.validate_all(test_settings_data)
+        validation_results = settings.validate_all(test_settings_data)
 
-        assert "capture.triggerShortcut" in validation_error_dictionary
-        assert "save.filenamePreset" in validation_error_dictionary
-        assert "save.directory" not in validation_error_dictionary
+        assert validation_results["capture.triggerShortcut"].is_error
+        assert validation_results["save.filenamePreset"].is_error
+        assert "save.directory" not in validation_results
+
+    def test_validate_prefers_error_over_preceding_warning(self, monkeypatch):
+        """先のルールが警告を返しても、後のルールのエラーが優先して返ることを検証する"""
+        monkeypatch.setattr(settings, "_VALIDATION_RULES", {"test.key": ["_validate_dummy_warning", "_validate_dummy_error"]})
+        monkeypatch.setattr(settings, "_validate_dummy_warning", lambda value: settings.ValidationResult.warning("警告"), raising=False)
+        monkeypatch.setattr(settings, "_validate_dummy_error", lambda value: settings.ValidationResult.error("エラー"), raising=False)
+
+        validation_result = settings.validate("test.key", "value")
+
+        assert validation_result.is_error
+        assert validation_result.message == "エラー"
+
+
+class TestOutputPathLength:
+    """
+    保存先フォルダとファイル名プリセットの組み合わせによるパス長の検証に関するテストクラス
+    プリセット "{title}{dup}.png" の場合、最短フルパスは "C:\\" + フォルダ名 + "\\.png" でフォルダ名の長さ + 8 文字になる
+    上書き警告がパス長の検証結果に混ざらないよう、プリセットには {dup} を含める
+    """
+
+    @staticmethod
+    def _build_settings_data(directory_name_length, filename_preset="{title}{dup}.png"):
+        """指定した長さのフォルダ名を持つ保存先フォルダとプリセットの辞書を生成する"""
+        return {
+            "save.directory": "C:\\" + "a" * directory_name_length,
+            "save.filenamePreset": filename_preset,
+        }
+
+    def test_validate_all_rejects_path_exceeding_max_length(self):
+        """{title} が空でも最短フルパスが260文字になる場合にプリセット側へエラーが返ることを検証する"""
+        validation_results = settings.validate_all(self._build_settings_data(252))
+
+        assert validation_results["save.filenamePreset"].is_error
+        assert "最大長" in validation_results["save.filenamePreset"].message
+        assert "save.directory" not in validation_results
+
+    def test_validate_all_accepts_path_within_max_length(self):
+        """最短フルパスがちょうど259文字の場合はエラーにならない（残り0文字の警告になる）ことを検証する"""
+        validation_results = settings.validate_all(self._build_settings_data(251))
+        assert validation_results["save.filenamePreset"].level == settings.ValidationLevel.WARNING
+
+    def test_validate_all_uses_expanded_directory_length(self, monkeypatch):
+        """環境変数を含むフォルダは展開後の長さで判定されることを検証する"""
+        monkeypatch.setenv("TEST_LONG_DIRECTORY", "C:\\" + "a" * 252)
+        validation_results = settings.validate_all({"save.directory": "%TEST_LONG_DIRECTORY%", "save.filenamePreset": "{title}.png"})
+
+        assert "最大長" in validation_results["save.filenamePreset"].message
+
+    def test_validate_all_skips_path_length_check_on_format_error(self):
+        """プリセットに書式エラーがある場合はパス長ではなく書式のエラーが返ることを検証する"""
+        validation_results = settings.validate_all(self._build_settings_data(252, filename_preset="{invalid_key}.png"))
+        assert "使用できないプレースホルダ" in validation_results["save.filenamePreset"].message
+
+    def test_warning_when_title_margin_below_threshold(self):
+        """タイトルに使える残り文字数が閾値未満（閾値 - 1 文字）の場合に警告が返ることを検証する"""
+        # 閾値を変更してもテストを直さずに済むよう、閾値から残り文字数とフォルダ名の長さを求める（最短フルパスはフォルダ名の長さ + 8 文字）
+        title_margin = settings._TITLE_LENGTH_WARNING_THRESHOLD - 1
+        validation_results = settings.validate_all(self._build_settings_data(251 - title_margin))
+
+        assert validation_results["save.filenamePreset"].level == settings.ValidationLevel.WARNING
+        assert f"残り文字数は{title_margin}文字" in validation_results["save.filenamePreset"].message
+
+    def test_no_warning_when_title_margin_at_threshold(self):
+        """タイトルに使える残り文字数が閾値ちょうどの場合は警告しないことを検証する"""
+        title_margin = settings._TITLE_LENGTH_WARNING_THRESHOLD
+        assert settings.validate_all(self._build_settings_data(251 - title_margin)) == {}
+
+    def test_no_warning_when_preset_has_no_title(self):
+        """プリセットに {title} が無い場合は残り文字数が少なくても警告しないことを検証する"""
+        assert settings.validate_all(self._build_settings_data(240, filename_preset="fixed{dup}.png")) == {}
 
 
 class TestSettingsManagerIO:
@@ -300,6 +409,40 @@ class TestSettingsManagerIO:
         # 不正な項目はデフォルト値に差し替えられ、正常な項目は維持されることを確認
         assert settings.get("capture.triggerShortcut") == "shift+print screen"
         assert settings.get("capture.soundVolume") == 80
+
+    def test_load_migrates_legacy_default_preset(self, isolated_settings_manager):
+        """旧デフォルトのファイル名プリセットのままの場合、現デフォルトへ置き換えて保存されることを検証する"""
+        with open(settings._get_settings_path(), "w", encoding="utf-8") as file:
+            json.dump({"save.filenamePreset": settings._LEGACY_DEFAULT_FILENAME_PRESET}, file, indent=4)
+
+        settings.load()
+
+        # メモリ上・ファイル上ともに現デフォルトになっていることを確認
+        default_preset = settings._DEFAULT_SETTINGS["save.filenamePreset"]
+        assert settings.get("save.filenamePreset") == default_preset
+        with open(settings._get_settings_path(), "r", encoding="utf-8") as file:
+            assert json.load(file)["save.filenamePreset"] == default_preset
+
+    def test_load_replaces_preset_when_path_exceeds_max_length(self, isolated_settings_manager):
+        """フォルダとプリセットの組み合わせで最大パス長を超える場合、プリセットがデフォルト値に戻り元ファイルが退避されることを検証する"""
+        long_directory = "C:\\" + "a" * 252
+        too_long_settings = {
+            "save.directory": long_directory,
+            "save.filenamePreset": "{title}.png",
+        }
+
+        with open(settings._get_settings_path(), "w", encoding="utf-8") as file:
+            json.dump(too_long_settings, file, indent=4)
+
+        settings.load()
+
+        # フォルダは維持され、プリセットのみデフォルト値に戻ることを確認
+        assert settings.get("save.directory") == long_directory
+        assert settings.get("save.filenamePreset") == settings._DEFAULT_SETTINGS["save.filenamePreset"]
+
+        # 元の設定ファイルが退避されていることを確認
+        backup_files = [filename for filename in os.listdir(os.path.dirname(settings._get_settings_path())) if "settings.json.corrupted_" in filename]
+        assert len(backup_files) == 1
 
     def test_save_atomic_write_creates_valid_json(self, isolated_settings_manager):
         """save() による書き込みで一時ファイルを経由して安全にJSONが保存されることを検証する"""

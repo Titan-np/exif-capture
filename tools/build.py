@@ -13,8 +13,11 @@ source_directory_path = os.path.join(project_root_directory_path, "src")
 sys.path.append(source_directory_path)
 
 import lib.constants as constants
-import lib.utils as utils
+import lib.paths as paths
 import lib.version as version
+
+# exeと一緒にdistフォルダへ配置し、配布zipに同梱するファイル (リポジトリルートからの相対パス)
+DISTRIBUTION_FILES = ["README.md"]
 
 
 def clean_previous_build_artifacts():
@@ -113,7 +116,7 @@ def build_app():
         "--noconsole",
         "--onefile",
         # exe本体のアイコンも、ビルド対象のバージョン（正式版 / beta版）に合わせて切り替える
-        f"--icon=assets/{utils.get_icon_filename(build_version)}",
+        f"--icon=assets/{paths.get_icon_filename(build_version)}",
         # assetsフォルダ内のすべてのファイルをバンドル対象にする (Windows環境を想定してセミコロン区切り)
         "--add-data=assets;assets",
         "--paths=src",  # src フォルダを明示的に探索パスに追加
@@ -126,7 +129,17 @@ def build_app():
         result = subprocess.run(command, cwd=project_root_directory_path)
 
         if result.returncode == 0:
-            print(f"\nビルドが完了しました！ dist/{constants.APP_NAME}.exe を確認してください。")
+            # distフォルダをそのまま配布物の構成にするため、同梱ファイルをexeの隣へコピー
+            dist_directory_path = os.path.join(project_root_directory_path, "dist")
+            for distribution_file in DISTRIBUTION_FILES:
+                try:
+                    shutil.copy2(os.path.join(project_root_directory_path, distribution_file), dist_directory_path)
+                    print(f"同梱ファイルをコピーしました: {distribution_file}")
+                except Exception as exception:
+                    print(f"\n同梱ファイルのコピーに失敗しました: {distribution_file}\n{exception}")
+                    return 1
+
+            print(f"\nビルドが完了しました！ dist/ フォルダ内の {constants.APP_NAME}.exe と同梱ファイルを確認してください。")
             return 0
         else:
             print(f"\nビルド中にエラーが発生しました (終了コード: {result.returncode})。")

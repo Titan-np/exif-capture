@@ -2,7 +2,6 @@ import asyncio
 import ctypes
 import datetime
 import os
-import sys
 import threading
 import time
 import webbrowser
@@ -11,6 +10,7 @@ from enum import StrEnum
 from win11toast import toast_async
 
 import lib.constants as constants
+import lib.paths as paths
 import lib.utils as utils
 
 # ログファイル書き込み時のリトライ設定（マルチプロセス環境等でのファイル競合対策）
@@ -48,10 +48,6 @@ def _ensure_start_menu_shortcut():
         return
 
     try:
-        import ctypes
-
-        import pythoncom
-        from win32com.propsys import propsys, pscon
         from win32com.shell import shell, shellcon
 
         # 現在のプロセスに AUMID を明示的に設定する
@@ -60,53 +56,10 @@ def _ensure_start_menu_shortcut():
         except Exception:
             pass
 
-        # スタートメニューのプログラムフォルダのパスを取得
+        # スタートメニューのプログラムフォルダに、AUMID付きのショートカットを作成・更新する
         programs_directory = shell.SHGetFolderPath(0, shellcon.CSIDL_PROGRAMS, None, 0)
         shortcut_path = os.path.join(programs_directory, f"{constants.APP_NAME}.lnk")
-
-        # 起動対象（exeまたはpythonスクリプト）・引数・アイコンを設定
-        # exe はアイコン未指定でも埋め込みアイコンが使われるため、開発時のみアイコンを指定する
-        # （assets のアイコンは exe 終了時に削除される一時フォルダ(_MEIPASS)にあり、ショートカットからは参照できない）
-        icon_path = None
-        if utils.is_executable():
-            target_path = sys.executable
-            arguments = ""
-        else:
-            # 開発時は pythonw.exe が存在すれば優先して使用し、コンソールウィンドウの表示を防ぐ
-            target_path = sys.executable
-            pythonw_candidate = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-            if os.path.exists(pythonw_candidate):
-                target_path = pythonw_candidate
-            main_script = utils.get_app_path(os.path.join("src", "main.pyw"))
-            arguments = f'"{main_script}"'
-            icon_path = utils.get_app_icon_path()
-
-        # COMライブラリを初期化
-        pythoncom.CoInitialize()
-        try:
-            # ショートカット（IShellLink）を作成
-            shell_link = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None, pythoncom.CLSCTX_INPROC_SERVER, shell.IID_IShellLink)
-            shell_link.SetPath(target_path)
-            if arguments:
-                shell_link.SetArguments(arguments)
-            shell_link.SetWorkingDirectory(utils.get_app_path())
-            if icon_path:
-                shell_link.SetIconLocation(icon_path, 0)
-            shell_link.SetDescription(constants.APP_NAME)
-
-            # ファイルに保存
-            persist_file = shell_link.QueryInterface(pythoncom.IID_IPersistFile)
-            persist_file.Save(shortcut_path, True)
-
-            # ショートカットのプロパティに System.AppUserModel.ID を設定する
-            # Windows はこの ID をもとにトースト通知上部のヘッダーにアイコンを表示する
-            property_store = propsys.SHGetPropertyStoreFromParsingName(shortcut_path, None, shellcon.GPS_READWRITE, propsys.IID_IPropertyStore)
-            property_key = pscon.PKEY_AppUserModel_ID
-            property_value = propsys.PROPVARIANTType(constants.APP_NAME)
-            property_store.SetValue(property_key, property_value)
-            property_store.Commit()
-        finally:
-            pythoncom.CoUninitialize()
+        utils.create_app_shortcut(shortcut_path, app_user_model_id=constants.APP_NAME)
 
     except Exception as exception:
         log(f"スタートメニューショートカットの登録・更新に失敗しました。\n{exception}")
@@ -222,7 +175,7 @@ def log(message: str):
 
     try:
         # ログファイルの保存先フォルダを作成
-        log_directory = utils.get_app_path("logs")
+        log_directory = paths.get_app_path("logs")
         if not os.path.exists(log_directory):
             os.makedirs(log_directory, exist_ok=True)
 

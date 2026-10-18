@@ -31,9 +31,11 @@ python -m pytest tests/ -v
 python -m pytest tests/test_settings.py -v
 python -m pytest tests/test_hotkey.py -v
 python -m pytest tests/test_capture.py -v
+python -m pytest tests/test_filename_preset.py -v
 python -m pytest tests/test_notifier.py -v
+python -m pytest tests/test_paths.py -v
+python -m pytest tests/test_startup.py -v
 python -m pytest tests/test_updater.py -v
-python -m pytest tests/test_utils.py -v
 python -m pytest tests/test_version.py -v
 ```
 
@@ -41,12 +43,14 @@ python -m pytest tests/test_version.py -v
 
 | モジュール | テスト観点                                                                         |
 | ---------- | ---------------------------------------------------------------------------------- |
-| settings   | 入力値検証、破損ファイルの自己復旧、旧キー移行（1つの旧キーの分割を含む）、アトミック書き込み |
+| settings   | 入力値検証、保存先パス長の検証と警告、上書きの恐れの警告、破損ファイルの自己復旧、旧キー移行（1つの旧キーの分割を含む）、旧デフォルトのプリセット移行、アトミック書き込み |
 | hotkey     | ショートカット文字列の構文解析、仮想キーコード解決、妥当性判定、設定変更時の再登録要否判定 |
-| capture    | ファイル名プレースホルダ展開、禁止文字置換、パス長制限、EXIFメタデータ付与、撮影の多重実行防止、通知音の音量変換 |
+| capture    | 禁止文字置換、同名ファイルの回避、パス長制限、EXIFメタデータ付与、撮影の多重実行防止、通知音の音量変換 |
 | notifier   | 通知の種別ごとの設定に応じたトースト通知の表示有無、種別指定の必須化               |
+| startup    | ショートカットの有無とWindows側の無効化記録による登録状態の判定、登録・解除、起動時のショートカット更新、開発時の操作抑止 |
 | updater    | タグ名の解析と大小比較、最新リリースの選択、設定に応じたアップデート確認と通知     |
-| utils      | チルダ展開、環境変数展開、アプリパス解決、バージョンに応じたアイコン選択           |
+| filename_preset | ファイル名プレースホルダ展開（連番・重複時連番を含む）と保存先パスの組み立て、既存ファイルと被らない連番の探索 |
+| paths      | チルダ展開、環境変数展開、アプリパス解決、バージョンに応じたアイコン選択 |
 | version    | 環境変数・git describe・フォールバックによるバージョン解決                         |
 
 ## 2.3 テストケース一覧
@@ -66,10 +70,27 @@ python -m pytest tests/test_version.py -v
 | test_validate_filename_chars_rejects_forbidden_chars        | 禁止文字（< > : " / \ \| ? \*）でエラーを返すこと          |
 | test_validate_filename_chars_ignores_placeholder_brackets   | プレースホルダ内の記号を誤検知しないこと                   |
 | test_validate_shortcut_format_delegates_to_hotkey_manager   | ショートカット検証が hotkey.Manager へ正しく委譲されること |
-| test_validate_preset_placeholders_accepts_allowed_keys      | 許可済みキー（timestamp, title）で None を返すこと         |
+| test_validate_preset_placeholders_accepts_allowed_keys      | 許可済みキー（timestamp, title, index, dup）で None を返すこと |
 | test_validate_preset_placeholders_rejects_unknown_keys      | 未定義プレースホルダでエラーを返すこと                     |
 | test_validate_preset_placeholders_rejects_unbalanced_braces | 不正な波括弧構文でエラーを返すこと                         |
+| test_validate_preset_placeholders_rejects_invalid_duplicate_format | {dup} の不正なテンプレート・開始番号でエラーを返すこと |
+| test_validate_overwrite_risk_warns_without_unique_placeholder | {index} / {dup} / %f 付き {timestamp} が無い場合に警告を返すこと |
+| test_validate_overwrite_risk_accepts_unique_placeholder     | {index} / {dup} / %f 付き {timestamp} のいずれかがあれば警告しないこと |
+| test_default_preset_has_no_validation_result                | デフォルトのファイル名プリセットでエラー・警告が出ないこと |
 | test_validate_all_returns_errors_for_invalid_entries        | 複数項目の一括バリデーションでエラーを正しく集約すること   |
+| test_validate_prefers_error_over_preceding_warning          | 先のルールが警告でも、後のルールのエラーを優先して返すこと |
+
+#### TestOutputPathLength（保存先パス長検証）
+
+| テストケース                                            | 検証内容                                                                 |
+| ------------------------------------------------------- | ------------------------------------------------------------------------ |
+| test_validate_all_rejects_path_exceeding_max_length     | {title} が空でも最短フルパスが 260 文字になる場合、プリセット側にエラーを返すこと |
+| test_validate_all_accepts_path_within_max_length        | 最短フルパスがちょうど 259 文字の場合はエラーにならず、警告になること     |
+| test_validate_all_uses_expanded_directory_length        | 環境変数を含むフォルダを展開後の長さで判定すること                       |
+| test_validate_all_skips_path_length_check_on_format_error | プリセット書式エラー時はパス長ではなく書式のエラーを返すこと           |
+| test_warning_when_title_margin_below_threshold          | タイトルに使える残り文字数が閾値未満の場合に警告を返すこと               |
+| test_no_warning_when_title_margin_at_threshold          | 残り文字数が閾値ちょうどの場合は警告しないこと                           |
+| test_no_warning_when_preset_has_no_title                | プリセットに {title} が無い場合は警告しないこと                          |
 
 #### TestSettingsManagerIO（ファイル読み書き・リカバリ検証）
 
@@ -82,6 +103,8 @@ python -m pytest tests/test_version.py -v
 | test_load_removes_old_key_when_new_key_exists           | 現キーと旧キーが混在する場合、現キーの値を優先し、旧キーがファイルから除去されること |
 | test_load_handles_corrupted_json_and_recovers           | JSON 破損時にバックアップ退避の上デフォルト復旧すること                        |
 | test_load_replaces_invalid_value_with_default           | 不正な設定値がデフォルト値に差し替えられること                                 |
+| test_load_migrates_legacy_default_preset                | 旧デフォルトのファイル名プリセットが現デフォルトへ置き換えて保存されること     |
+| test_load_replaces_preset_when_path_exceeds_max_length  | フォルダとプリセットの組み合わせで最大パス長を超える場合、プリセットがデフォルト値に戻り元ファイルが退避されること |
 | test_save_atomic_write_creates_valid_json               | save がアトミック書き込みで正しく保存されること                                |
 | test_get_and_set_in_memory                              | メモリ上での get / set が期待通り動作すること                                  |
 
@@ -119,19 +142,13 @@ python -m pytest tests/test_version.py -v
 
 ### test_capture.py
 
-#### TestFormattableTimestamp（日時フォーマット検証）
-
-| テストケース                          | 検証内容                                                       |
-| ------------------------------------- | -------------------------------------------------------------- |
-| test_default_format_without_specifier | 書式指定なしでデフォルト書式（%Y%m%d\_%H%M%S）が適用されること |
-| test_custom_format_with_specifier     | カスタム書式指定が正しく反映されること                         |
-
 #### TestGenerateOutputPath（保存先パス生成検証）
 
 | テストケース                                                | 検証内容                                         |
 | ----------------------------------------------------------- | ------------------------------------------------ |
 | test_generate_output_path_replaces_forbidden_characters     | ウィンドウタイトルの禁止文字が置換されること     |
 | test_generate_output_path_formats_timestamp_and_title       | プリセットに基づきパスが正しく組み立てられること |
+| test_generate_output_path_avoids_existing_file              | 同名ファイルがある場合に {dup} の連番付きパスを返すこと |
 | test_generate_output_path_rejects_path_exceeding_max_length | パス長 259 文字超過時に None を返すこと          |
 | test_generate_output_path_handles_format_error              | プリセット書式エラー時に None を返すこと         |
 
@@ -167,6 +184,33 @@ python -m pytest tests/test_version.py -v
 | test_other_category_setting_does_not_affect  | 他の種別の設定がオフでも、対象の種別の設定がオンなら送信されること                           |
 | test_category_is_required                    | 種別を指定せずに呼び出すと TypeError になること                                              |
 
+### test_startup.py
+
+#### TestGetStatus（登録状態の判定検証）
+
+| テストケース                                     | 検証内容                                                                         |
+| ------------------------------------------------ | -------------------------------------------------------------------------------- |
+| test_returns_unregistered_when_shortcut_missing  | ショートカットが無い場合に未登録と判定されること                                 |
+| test_returns_enabled_when_not_disabled_by_windows | ショートカットがあり、StartupApproved の記録が無いか先頭バイトが偶数の場合に有効と判定されること |
+| test_returns_disabled_when_disabled_by_windows   | ショートカットがあり、StartupApproved の先頭バイトが奇数の場合にWindows側で無効と判定されること |
+
+#### TestRegistration（登録・解除検証）
+
+| テストケース                                     | 検証内容                                                                 |
+| ------------------------------------------------ | ------------------------------------------------------------------------ |
+| test_register_creates_shortcut                   | スタートアップフォルダのパスでショートカットが作成されること             |
+| test_register_notifies_error_on_failure          | 作成失敗時に False を返し、エラー通知されること                          |
+| test_unregister_removes_shortcut                 | 解除時にショートカットが削除されること                                   |
+| test_unregister_succeeds_when_shortcut_missing   | ショートカットが既に無い場合も解除成功として扱い、エラー通知しないこと   |
+| test_skips_in_development_environment           | 開発時は登録・解除・更新のいずれもショートカットを操作しないこと         |
+
+#### TestRefreshShortcut（起動時のショートカット更新検証）
+
+| テストケース                   | 検証内容                                   |
+| ------------------------------ | ------------------------------------------ |
+| test_skips_when_unregistered   | 未登録の場合はショートカットを作成しないこと |
+| test_recreates_when_registered | 登録済みの場合はショートカットを作り直すこと |
+
 ### test_updater.py
 
 #### TestParseVersion（タグ名の解析・比較検証）
@@ -198,7 +242,42 @@ python -m pytest tests/test_version.py -v
 | test_fetch_failure_notifies_only_on_manual_check | 取得失敗時、自動確認ではログのみ、手動確認ではエラー通知が行われること           |
 | test_skips_when_current_version_unparsable       | 現在のバージョンを解析できない場合、リリース一覧を取得しないこと                 |
 
-### test_utils.py
+### test_filename_preset.py
+
+#### TestFormattableTimestamp（日時フォーマット検証）
+
+| テストケース                          | 検証内容                                                       |
+| ------------------------------------- | -------------------------------------------------------------- |
+| test_default_format_without_specifier | 書式指定なしでデフォルト書式（%Y%m%d\_%H%M%S）が適用されること |
+| test_custom_format_with_specifier     | カスタム書式指定が正しく反映されること                         |
+
+#### TestFormatOutputPath（保存先パス組み立て検証）
+
+| テストケース                                               | 検証内容                                                     |
+| ---------------------------------------------------------- | ------------------------------------------------------------ |
+| test_format_output_path_expands_directory_and_formats_preset | フォルダの環境変数が展開され、プリセットが置換されたパスを返すこと |
+| test_format_output_path_formats_index                      | {index} に連番が入り、{index:03} でゼロ埋めされること        |
+
+#### TestDuplicateSuffix（重複時連番の書式検証）
+
+| テストケース                           | 検証内容                                                         |
+| -------------------------------------- | ---------------------------------------------------------------- |
+| test_first_file_has_no_suffix          | 1件目は書式指定に関わらず空文字になること                        |
+| test_default_format_without_specifier  | 書式指定が無い場合は「 (2)」形式になること                       |
+| test_custom_template_and_zero_padding  | テンプレートで区切り文字やゼロ埋めを指定できること               |
+| test_custom_start_number               | 「:」区切りで2件目の番号を指定できること                         |
+| test_invalid_format_raises_value_error | 変換指定の無いテンプレートや整数でない開始番号で ValueError になること |
+
+#### TestBuildOutputPath（重複しない保存先パスの確定検証）
+
+| テストケース                                          | 検証内容                                                             |
+| ----------------------------------------------------- | -------------------------------------------------------------------- |
+| test_returns_first_path_when_not_exists               | 同名ファイルが無い場合は連番なしのパスを返すこと                     |
+| test_skips_existing_files                             | 同名ファイルがある場合は空いている連番のパスを返すこと               |
+| test_skips_existing_files_with_index                  | {index} でも既存ファイルと被らない番号を返すこと                     |
+| test_returns_existing_path_without_sequence_placeholder | {index} / {dup} が無い場合は同名ファイルがあってもそのパスを返すこと |
+
+### test_paths.py
 
 #### TestExpandPath（パス展開検証）
 
@@ -250,6 +329,7 @@ pytest による自動テストでは検証できない範囲について、手�
 | settings_window.py（設定画面） | タブ表示、タブをまたいだ保存、テスト再生、バリデーション表示と解除、キー記録とキャンセル | GUIアプリケーションのため                                                |
 | hotkey.py（ホットキー登録）    | 競合時のエラー通知、設定変更時の再登録                                         | Windowsのメッセージループ上で動作し、OSネイティブ機能の確認を要するため  |
 | updater.py（アップデート確認） | GitHub Releasesからの取得、リリースページを開くボタン                          | 実際のGitHub APIとの通信を伴い、pytestでは取得処理をモック化しているため |
+| startup.py（スタートアップ）   | 設定画面からの登録・解除、Windows側で無効化した状態の表示、サインイン時の自動起動 | スタートアップフォルダ・タスクマネージャー・サインインといったOSの機能を使い、exeのビルドも要するため |
 | アプリアイコンの出し分け       | 実行中のトレイ・設定画面のアイコン、終了後のスタートメニューでのアイコン       | exeのビルドと、トレイ・スタートメニュー等での目視確認を要するため        |
 
 ## 3.2 テストケース一覧
@@ -316,3 +396,13 @@ pytest による自動テストでは検証できない範囲について、手�
 | ---- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------- |
 | M-20 | exe 実行中のアイコン     | `EXIF_CAPTURE_VERSION=v1.2.0-beta.1 python tools/build.py` を実行し、生成された exe を起動して設定画面を開く（bash の場合）                            | トレイと設定画面に icon_beta.ico のアイコンが表示される                    |
 | M-21 | exe 終了後のアイコン     | M-20 の exe でキャプチャを1回行ってから終了し、スタートメニューの「EXIF Capture」を確認する                                                            | icon_beta.ico のアイコンが表示されている（汎用アイコンや空白にならない）   |
+
+### スタートアップ（startup.py）
+
+| #    | テストケース             | 手順                                                                                                                       | 期待結果                                                                 |
+| ---- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| M-22 | 開発時の操作抑止         | `python src/main.pyw` で起動し、設定画面の「全般」タブを開く                                                               | 「exe実行時のみ設定できます。」と表示され、ボタンが押せない              |
+| M-23 | スタートアップへの登録   | `python tools/build.py` で生成した exe を起動し、設定画面の「全般」タブで「登録する」を押す                                | `shell:startup` のフォルダに「EXIF Capture.lnk」が作成される             |
+| M-24 | Windows側で無効化した表示 | M-23 の後、タスクマネージャーの「スタートアップ アプリ」で EXIF Capture を無効にし、設定画面を開き直す                     | 「Windowsの設定で無効になっています」と表示される                        |
+| M-25 | サインイン時の自動起動   | M-24 の項目をタスクマネージャーで有効に戻し、サインアウトしてからサインインする                                            | アプリが自動で起動し、起動通知が表示される                               |
+| M-26 | スタートアップの登録解除 | M-25 の後、設定画面の「全般」タブで「解除する」を押す                                                                       | `shell:startup` のフォルダから「EXIF Capture.lnk」が削除され、「登録されていません」と表示される |

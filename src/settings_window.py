@@ -10,7 +10,9 @@ import capture
 import lib.constants as constants
 import lib.hotkey as hotkey
 import lib.notifier as notifier
+import lib.paths as paths
 import lib.settings as settings
+import lib.startup as startup
 import lib.updater as updater
 import lib.utils as utils
 
@@ -19,6 +21,10 @@ _SYS_FONT = ("Meiryo UI", 13)
 _HINT_FONT = ("Meiryo UI", 11)
 _HEADING_FONT = ("Meiryo UI", 14, "bold")
 _TAB_FONT = ("Meiryo UI", 13, "bold")
+
+# 入力欄下のメッセージ色（エラーは保存不可、警告は保存可能だが注意が必要）
+_ERROR_TEXT_COLOR = "#FF6B6B"
+_WARNING_TEXT_COLOR = "#FFA94D"
 
 # 設定キーの接頭辞に対応するタブ名（タブの生成と、入力エラーがあるタブの案内に使用する）
 _TAB_NAMES_BY_KEY_PREFIX = {
@@ -45,7 +51,7 @@ class SettingRow(NamedTuple):
     """設定項目行の構成要素をまとめて保持するデータクラス"""
 
     key: str  # 設定キー
-    widget: ctk.CTkBaseClass  # 入力ウィジェット（Entry / Switch / OptionMenu）
+    widget: ctk.CTkBaseClass  # 入力ウィジェット（Entry / Switch / OptionMenu）、または状態表示用の Label
     error_label: ctk.CTkLabel | None  # エラーメッセージ表示用ラベル（バリデーション対象外なら None）
     button: ctk.CTkButton | None = None  # 付属ボタンウィジェット（存在しない場合は None）
 
@@ -86,7 +92,7 @@ class _SettingRowBuilder:
             command=command,
         )
 
-    def __init__(self, parent, key, label_text=None, hint_text=None, accent_color=None, hover_color=None):
+    def __init__(self, parent, key, label_text=None, hint_text=None, hint_rows=None, accent_color=None, hover_color=None):
         """
         設定項目行の領域を初期化する
 
@@ -95,6 +101,7 @@ class _SettingRowBuilder:
             key (str): 設定キー
             label_text (str, optional): 画面に表示する見出しテキスト
             hint_text (str, optional): 項目下部に表示する補足テキスト
+            hint_rows (list[tuple[str, str]], optional): 項目下部に表形式で表示する (用語, 説明) のリスト
             accent_color (str, optional): アクセントカラー
             hover_color (str, optional): ホバー時のアクセントカラー
         """
@@ -131,6 +138,21 @@ class _SettingRowBuilder:
             label_hint = ctk.CTkLabel(self._row_area, text=hint_text, text_color="gray", font=_HINT_FONT, justify="left")
             label_hint.pack(anchor="w")
 
+        # 表形式の補足テキストが存在する場合は下部に追加
+        # 用語を左列にそろえ、どの説明がどの用語に対するものかを見分けやすくする
+        if hint_rows:
+            hint_table = ctk.CTkFrame(self._row_area, fg_color="transparent")
+            hint_table.pack(anchor="w")
+            for row_index, (term_text, description_text) in enumerate(hint_rows):
+                # 用語同士の間に余白を空け、項目の切れ目を分かりやすくする
+                row_padding = (0 if row_index == 0 else 4, 0)
+                term_label = ctk.CTkLabel(hint_table, text=term_text, text_color="gray", font=_HINT_FONT, anchor="nw", height=0)
+                term_label.grid(row=row_index, column=0, sticky="nw", padx=(0, 10), pady=row_padding)
+                description_label = ctk.CTkLabel(
+                    hint_table, text=description_text, text_color="gray", font=_HINT_FONT, anchor="nw", justify="left", height=0
+                )
+                description_label.grid(row=row_index, column=1, sticky="nw", pady=row_padding)
+
     def add_validate(self, on_validate=None):
         """
         バリデーション機能を有効化し、エラーメッセージ表示用の枠を配置する
@@ -149,9 +171,11 @@ class _SettingRowBuilder:
         self._error_label = ctk.CTkLabel(
             self._row_area,
             text="",
-            text_color="#FF6B6B",
+            text_color=_ERROR_TEXT_COLOR,
             font=_HINT_FONT,
             anchor="w",
+            # 複数行メッセージの2行目以降も左揃えにする（anchor はラベル内での文字列全体の位置のみを決めるため）
+            justify="left",
             height=18,
         )
         self._error_label.pack(anchor="w")
@@ -178,6 +202,26 @@ class _SettingRowBuilder:
 
         # 入力欄の参照を保持
         self._widget = entry
+
+        # 自身を返す（メソッドチェーン用）
+        return self
+
+    def add_label(self, text=""):
+        """
+        入力欄の代わりに、状態などを表示するラベルを追加する
+
+        Args:
+            text (str, optional): 表示するテキスト
+
+        Returns:
+            _SettingRowBuilder: self（メソッドチェーン用）
+        """
+        # ラベルを作成し、右側に追加するボタンと横並びにするため左寄せで配置
+        label = ctk.CTkLabel(self._content_area, text=text, font=_SYS_FONT, anchor="w")
+        label.pack(side="left", fill="x", expand=True, padx=(0, 10))
+
+        # ラベルの参照を保持
+        self._widget = label
 
         # 自身を返す（メソッドチェーン用）
         return self
@@ -325,14 +369,14 @@ class SettingsWindow(ctk.CTk):
 
         # ウィンドウのタイトル・サイズを設定
         self.title(f"{constants.APP_NAME} 設定")
-        self.geometry("500x480")
+        self.geometry("500x580")
         self.resizable(False, False)
 
         # ウィンドウアイコン・タスクバーアイコンの設定
         # WindowsのタスクバーでPython標準アイコンになるのを防ぐため、固有AppUserModelID(AUMID)を設定
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(constants.APP_SETTINGS_USER_MODEL_ID)
         # 実行形態とバージョンに対応するアイコンを取得・設定
-        icon_path = utils.get_app_icon_path()
+        icon_path = paths.get_app_icon_path()
         self.iconbitmap(icon_path)
 
         # 外観を設定
@@ -373,6 +417,8 @@ class SettingsWindow(ctk.CTk):
         self._add_metadata_toggle_field(save_tab)
 
         # 「全般」タブの設定項目を、見出しで区切って追加
+        self._add_section_heading(general_tab, "スタートアップ")
+        self._add_startup_field(general_tab)
         self._add_section_heading(general_tab, "Windows通知")
         self._add_notification_toggle_fields(general_tab)
         self._add_section_heading(general_tab, "アップデート")
@@ -381,7 +427,7 @@ class SettingsWindow(ctk.CTk):
         # 初期表示時にバリデーションを実行する
         self._run_validation()
 
-    def _create_row_builder(self, tab_frame, key, label_text=None, hint_text=None):
+    def _create_row_builder(self, tab_frame, key, label_text=None, hint_text=None, hint_rows=None):
         """
         設定項目ビルダーを生成するヘルパー関数
         バリデーションルールの有無を settings_manager から判定し、対象項目の場合は自動でバリデーションを有効化する
@@ -391,6 +437,7 @@ class SettingsWindow(ctk.CTk):
             key (str): 設定キー
             label_text (str, optional): 画面に表示する見出しテキスト
             hint_text (str, optional): 項目下部に表示する補足テキスト
+            hint_rows (list[tuple[str, str]], optional): 項目下部に表形式で表示する (用語, 説明) のリスト
 
         Returns:
             _SettingRowBuilder: 行ビルダーのインスタンス
@@ -400,6 +447,7 @@ class SettingsWindow(ctk.CTk):
             key=key,
             label_text=label_text,
             hint_text=hint_text,
+            hint_rows=hint_rows,
             accent_color=self._accent_color,
             hover_color=self._hover_color,
         )
@@ -528,9 +576,9 @@ class SettingsWindow(ctk.CTk):
         def browse_directory():
             # 初期表示フォルダ：入力があればそのフォルダを展開、無ければユーザーフォルダを表示
             entry = setting_row.widget
-            initial_dir = utils.expand_path(entry.get())
+            initial_dir = paths.expand_path(entry.get())
             if not os.path.exists(initial_dir):
-                initial_dir = utils.expand_path("~")
+                initial_dir = paths.expand_path("~")
             # フォルダ選択ダイアログを表示
             selected_dir = filedialog.askdirectory(initialdir=initial_dir, title="フォルダを選択")
             # フォルダが選択された場合
@@ -538,6 +586,8 @@ class SettingsWindow(ctk.CTk):
                 selected_dir = selected_dir.replace("/", "\\")
                 entry.delete(0, "end")
                 entry.insert(0, selected_dir)
+                # 検証は入力欄のフォーカスアウト時に走るため、ダイアログでの選択直後にも実行してパス長の警告などを即時表示する
+                self._run_validation()
 
         setting_row = (
             self._create_row_builder(tab_frame=tab_frame, key=key, label_text="保存先フォルダ:")
@@ -555,7 +605,23 @@ class SettingsWindow(ctk.CTk):
                 tab_frame=tab_frame,
                 key=key,
                 label_text="ファイル名プリセット:",
-                hint_text="{timestamp}: 撮影日時 {timestamp:%Y%m%d} などで書式カスタムが可能です\n{title}: ウィンドウタイトル",
+                # 画面幅に収まるよう、説明は1行を短く区切る
+                hint_rows=[
+                    (
+                        "{timestamp}",
+                        "撮影日時\n{timestamp:(書式)} で書式を指定できます。\n%f でマイクロ秒を出力できます。\n例: {timestamp:%Y%m%d_%H%M%S_%f}",
+                    ),
+                    ("{title}", "ウィンドウタイトル"),
+                    ("{index}", "保存先で重複しない連番\n{index:0(桁数)} で0埋めが可能です。\n例: {index:03}"),
+                    (
+                        "{dup}",
+                        "同名ファイルがある時のみ付く連番（既定: 「 (2)」）\n"
+                        "{dup:(書式)} で書式を指定できます。%d が番号です。\n"
+                        "例: {dup:_%d}\n"
+                        "{dup:(書式):(番号)} で2件目の番号を指定できます。\n"
+                        "例: {dup:_%d:1}",
+                    ),
+                ],
             )
             .add_entry(initial_value=settings.get(key))
             .build()
@@ -572,6 +638,53 @@ class SettingsWindow(ctk.CTk):
             )
             .build()
         )
+
+    def _add_startup_field(self, tab_frame):
+        """
+        Windows起動時の自動起動を登録・解除する項目を追加する
+        登録状態は settings.json ではなくショートカットの有無で管理するため、適用・保存とは切り離してボタン押下時に即時反映する
+        """
+        # 登録状態ごとの (状態ラベルの文言, ボタンの文言)
+        display_texts_by_status = {
+            startup.StartupStatus.UNREGISTERED: ("登録されていません", "登録する"),
+            startup.StartupStatus.ENABLED: ("登録されています", "解除する"),
+            startup.StartupStatus.DISABLED_BY_WINDOWS: ("Windowsの設定で無効になっています", "解除する"),
+        }
+
+        # 現在の登録状態を読み取り、状態ラベルとボタンの文言を更新する
+        def refresh_display():
+            status_text, button_text = display_texts_by_status[startup.get_status()]
+            setting_row.widget.configure(text=status_text)
+            setting_row.button.configure(text=button_text)
+
+        # 未登録なら登録、登録済み（Windows側で無効な場合を含む）なら解除し、結果を表示に反映する
+        def toggle_registration():
+            if startup.get_status() == startup.StartupStatus.UNREGISTERED:
+                startup.register()
+            else:
+                startup.unregister()
+            refresh_display()
+
+        # 適用・保存の対象外とするため、_setting_items には登録しない
+        setting_row = (
+            self._create_row_builder(
+                tab_frame=tab_frame,
+                key="startup",
+                label_text="Windows起動時の自動起動:",
+                hint_text="ボタンを押した時点で反映されます。Windows側で無効になっている場合は、\nタスクマネージャーの「スタートアップ アプリ」から有効にしてください。",
+            )
+            .add_label()
+            .add_button(text="登録する", width=100, command=toggle_registration)
+            .build()
+        )
+
+        # 開発時は開発環境が登録されてしまうのを防ぐため、操作できないようにする
+        if not paths.is_executable():
+            setting_row.widget.configure(text="exe実行時のみ設定できます。")
+            setting_row.button.configure(state="disabled")
+            return
+
+        refresh_display()
 
     def _add_notification_toggle_fields(self, tab_frame):
         """通知の種別ごとのWindows通知設定スイッチを追加する"""
@@ -623,7 +736,7 @@ class SettingsWindow(ctk.CTk):
         self._validation_summary_label = ctk.CTkLabel(
             buttons_area,
             text="",
-            text_color="#FF6B6B",
+            text_color=_ERROR_TEXT_COLOR,
             font=_HINT_FONT,
             height=18,
         )
@@ -664,29 +777,32 @@ class SettingsWindow(ctk.CTk):
 
     def _run_validation(self):
         """
-        全設定項目のバリデーションを実行し、エラー表示とボタン状態を更新する
+        全設定項目のバリデーションを実行し、エラー・警告の表示とボタン状態を更新する
         エラーラベルはあらかじめ枠を確保して配置されているため、text の更新のみを行いレイアウトのズレを防ぐ
         """
-        # 1. 各項目のバリデーションを実行し、項目ごとのエラー表示を更新しつつ、エラーのあるタブ名を集める
+        # 1. バリデーション対象の全項目の値を保存値の形式で集め、エラーと警告を一括取得する
+        # 保存先フォルダとファイル名の組み合わせで決まるパス長も検証するため、項目単位ではなく一括で行う
+        validation_rows = {key: setting_row for key, setting_row in self._setting_items.items() if setting_row.error_label is not None}
+        values = {key: self._get_widget_value(setting_row) for key, setting_row in validation_rows.items()}
+        validation_results = settings.validate_all(values)
+
+        # 2. 項目ごとにエラー・警告を表示しつつ、エラーのあるタブ名を集める
         error_tab_names = []
-        for key, setting_row in self._setting_items.items():
-            if setting_row.error_label is None:
-                continue
-
-            # ウィジェットから現在の値を保存値の形式で取得してバリデーション実行
-            value = self._get_widget_value(setting_row)
-            error = settings.validate(key, value)
-
-            if error:
-                setting_row.error_label.configure(text=error)
+        for key, setting_row in validation_rows.items():
+            result = validation_results.get(key)
+            if result is None:
+                setting_row.error_label.configure(text="")
+            elif result.is_error:
+                setting_row.error_label.configure(text=result.message, text_color=_ERROR_TEXT_COLOR)
                 # 設定キーの接頭辞（例: "save.directory" の "save"）から所属タブ名を求める
                 tab_name = _TAB_NAMES_BY_KEY_PREFIX[key.split(".")[0]]
                 if tab_name not in error_tab_names:
                     error_tab_names.append(tab_name)
             else:
-                setting_row.error_label.configure(text="")
+                # 警告は保存を妨げないため、タブ案内やボタン状態には反映しない
+                setting_row.error_label.configure(text=result.message, text_color=_WARNING_TEXT_COLOR)
 
-        # 2. エラーのあるタブ名をボタン上部に案内する（例: 「撮影」「保存」タブに入力エラーがあります。）
+        # 3. エラーのあるタブ名をボタン上部に案内する（例: 「撮影」「保存」タブに入力エラーがあります。）
         has_error = bool(error_tab_names)
         if self._validation_summary_label:
             summary_text = ""
@@ -694,7 +810,7 @@ class SettingsWindow(ctk.CTk):
                 summary_text = "".join(f"「{tab_name}」" for tab_name in error_tab_names) + "タブに入力エラーがあります。"
             self._validation_summary_label.configure(text=summary_text)
 
-        # 3. エラーがある場合は適用・保存ボタンを非活性にする
+        # 4. エラーがある場合は適用・保存ボタンを非活性にする
         state = "disabled" if has_error else "normal"
         if self._button_apply:
             self._button_apply.configure(state=state)

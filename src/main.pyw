@@ -8,6 +8,8 @@ import capture
 import lib.constants as constants
 import lib.hotkey as hotkey
 import lib.notifier as notifier
+import lib.paths as paths
+import lib.startup as startup
 import lib.updater as updater
 import lib.utils as utils
 import lib.version as version
@@ -31,7 +33,7 @@ def _create_tray_icon_image():
         PIL.Image.Image: 生成されたアイコン画像
     """
     # 実行形態とバージョンに対応するアイコンのパスを取得
-    icon_path = utils.get_app_icon_path()
+    icon_path = paths.get_app_icon_path()
 
     try:
         # アイコン画像を読み込む
@@ -164,6 +166,9 @@ def _launch_application():
 
     # 新しいバージョンが公開されていないかを、起動から一定時間後に確認する
     updater.start_startup_check()
+
+    # スタートアップに登録済みの場合、exeの移動に追従するようショートカットのリンク先を現在のexeに更新する
+    startup.refresh_shortcut()
 
     # 通知領域での常駐を開始してメインループを起動する（起動通知は登録成否コールバック内で行う）
     _tray_icon.run()

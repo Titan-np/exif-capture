@@ -6,7 +6,7 @@
 import os
 import subprocess
 
-import lib.utils as utils
+import lib.paths as paths
 
 # バージョン情報が取得できなかった場合の代替文字列
 FALLBACK_VERSION = "バージョン番号取得失敗"
@@ -27,7 +27,7 @@ def get_app_version() -> str:
     """
     # 1. exe実行時は、ビルド時にPyInstallerバンドル対象として自動生成されたファイルを最優先で参照
     # （ビルド中断で src/_version.py が残っても、開発時に古いバージョンを拾わないよう exe 実行時に限定する）
-    if utils.is_executable():
+    if paths.is_executable():
         try:
             from _version import APP_VERSION as EMBEDDED_VERSION
 
@@ -44,7 +44,7 @@ def get_app_version() -> str:
     try:
         # リポジトリルートを取得
 
-        repository_root_path = utils.get_app_path()
+        repository_root_path = paths.get_app_path()
 
         git_command = ["git", "describe", "--tags", "--abbrev=0"]
         execution_result = subprocess.run(

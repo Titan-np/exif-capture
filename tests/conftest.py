@@ -20,7 +20,7 @@ os.environ["EXIF_CAPTURE_TESTING"] = "1"
 
 import lib.notifier as notifier
 import lib.settings as settings
-import lib.utils as utils
+import lib.paths as paths
 
 
 @pytest.fixture(autouse=True)
@@ -62,14 +62,13 @@ def isolated_settings_manager(tmp_path, monkeypatch):
         module: テスト用の独立した設定モジュール (lib.settings)
     """
 
-    # lib.utils.get_app_path の戻り先を一時ディレクトリ配下に変更
+    # lib.paths.get_app_path の戻り先を一時ディレクトリ配下に変更
     def mock_get_app_path(relative_path: str = ""):
         if relative_path:
             return str(tmp_path / relative_path)
         return str(tmp_path)
 
-    monkeypatch.setattr(utils, "get_app_path", mock_get_app_path)
-    monkeypatch.setattr(settings.utils, "get_app_path", mock_get_app_path)
+    monkeypatch.setattr(paths, "get_app_path", mock_get_app_path)
 
     # テスト開始前にメモリ上の設定データをクリアし、一時ディレクトリ上で初期ロードを行う
     settings._data.clear()

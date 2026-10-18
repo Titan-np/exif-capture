@@ -8,30 +8,15 @@ import threading
 import win32gui
 from PIL import ImageGrab, PngImagePlugin
 
+import lib.constants as constants
+import lib.filename_preset as filename_preset
 import lib.notifier as notifier
+import lib.paths as paths
 import lib.settings as settings
 import lib.utils as utils
 
-# Windows の最大パス長（MAX_PATH 260 から終端文字分を引いた値）
-_WINDOWS_MAX_PATH_LENGTH = 259
-
 # 撮影処理の連続実行による競合・滞留を防ぐためのロック
 _capture_lock = threading.Lock()
-
-
-class _FormattableTimestamp(datetime.datetime):
-    """
-    ファイル名プリセットの {timestamp} に対応する datetime サブクラス
-    書式指定がない場合はデフォルト書式を使用する
-    """
-
-    _DEFAULT_FORMAT = "%Y%m%d_%H%M%S"
-
-    def __format__(self, spec):
-        # 書式指定がない場合はデフォルト書式を使用する
-        if not spec:
-            return self.strftime(self._DEFAULT_FORMAT)
-        return self.strftime(spec)
 
 
 def _get_active_window_properties():
@@ -104,19 +89,16 @@ def _generate_output_path(window_title):
         )
         return None
 
-    # ファイル名プリセットを取得（例: "{timestamp}_{title}.png"）
+    # ファイル名プリセットを取得（例: "{timestamp}_{title}{dup}.png"）
     preset_pattern = settings.get("save.filenamePreset")
 
     # ウィンドウタイトルをファイル名用に変換
     # Windowsのファイル名として使用できない禁止文字を安全な文字に置換する
     safe_title = re.sub(r'[\\/*?:"<>|]', "_", window_title)
 
-    # 現在時刻を取得（書式指定対応のタイムスタンプ）
-    current_time = _FormattableTimestamp.now()
-
-    # ファイル名・フォルダパスを生成
+    # ファイル名・フォルダパスを生成（{timestamp} には現在時刻、{index} / {dup} には既存ファイルと被らない連番が入る）
     try:
-        output_filename = preset_pattern.format(timestamp=current_time, title=safe_title)
+        output_path = filename_preset.build_output_path(save_directory, preset_pattern, safe_title)
     except (KeyError, ValueError, IndexError) as exception:
         # プリセット書式エラー時は設定変更を促す
         notifier.notify(
@@ -127,13 +109,12 @@ def _generate_output_path(window_title):
         )
         return None
 
-    output_path = os.path.join(save_directory, output_filename)
-
     # ファイル名が Windows の最大パス長を超える場合はエラーとする
-    if len(output_path) > _WINDOWS_MAX_PATH_LENGTH:
+    # 設定時に弾けるのは {title} が空でも超える場合のみのため、長いタイトルによる超過はここで検出する
+    if len(output_path) > constants.WINDOWS_MAX_PATH_LENGTH:
         notifier.notify(
             title="撮影に失敗しました。",
-            message=f"保存先パスが最大長({_WINDOWS_MAX_PATH_LENGTH}文字)を超えています。設定を見直してください。\n({output_path})",
+            message=f"保存先パスが最大長({constants.WINDOWS_MAX_PATH_LENGTH}文字)を超えています。設定を見直してください。\n({output_path})",
             buttons=[notifier.NotificationButton.OPEN_SETTINGS, notifier.NotificationButton.OPEN_LOG],
             category=notifier.NotificationCategory.ERROR,
         )
@@ -188,7 +169,7 @@ def play_capture_sound(volume=None):
         return
 
     # 音声ファイルのパスを取得
-    sound_path = utils.get_asset_path("capture_sound.mp3")
+    sound_path = paths.get_asset_path("capture_sound.mp3")
 
     try:
         # WindowsのMCIコマンドでMP3を再生する

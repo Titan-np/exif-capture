@@ -14,3 +14,6 @@ GITHUB_REPOSITORY = "Titan-np/exif-capture"
 
 # 新しいバージョンの通知から開くリリースページのURL
 RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases"
+
+# Windows の最大パス長（MAX_PATH 260 から終端文字分を引いた値）
+WINDOWS_MAX_PATH_LENGTH = 259

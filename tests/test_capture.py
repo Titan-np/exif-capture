@@ -1,6 +1,6 @@
 """
 capture モジュールの単体テスト
-日時フォーマットクラス、保存先パス生成ロジック、EXIFメタデータ生成ロジック、多重実行防止、通知音の音量変換を検証する
+保存先パス生成ロジック、EXIFメタデータ生成ロジック、多重実行防止、通知音の音量変換を検証する
 """
 
 import os
@@ -9,27 +9,6 @@ from unittest.mock import MagicMock
 from PIL import Image
 
 import capture
-
-
-class TestFormattableTimestamp:
-    """
-    ファイル名プレースホルダ用の日時拡張クラス（_FormattableTimestamp）に関するテストクラス
-    """
-
-    def test_default_format_without_specifier(self):
-        """書式指定子を渡さない場合にデフォルト書式（%Y%m%d_%H%M%S）で出力されることを検証する"""
-        target_datetime = capture._FormattableTimestamp(2026, 9, 28, 15, 30, 45)
-        formatted_string = f"{target_datetime}"
-        assert formatted_string == "20260928_153045"
-
-    def test_custom_format_with_specifier(self):
-        """任意のカスタム書式指定（例: %Y-%m-%d）が正しく適用されることを検証する"""
-        target_datetime = capture._FormattableTimestamp(2026, 9, 28, 15, 30, 45)
-        formatted_string = f"{target_datetime:%Y-%m-%d}"
-        assert formatted_string == "2026-09-28"
-
-        formatted_time_only = f"{target_datetime:%H%M%S}"
-        assert formatted_time_only == "153045"
 
 
 class TestGenerateOutputPath:
@@ -59,6 +38,16 @@ class TestGenerateOutputPath:
         assert generated_path is not None
         assert generated_path.startswith("C:\\Screenshots\\")
         assert generated_path.endswith("_AppTitle.png")
+
+    def test_generate_output_path_avoids_existing_file(self, monkeypatch, tmp_path):
+        """同名ファイルがある場合に {dup} の連番付きパスが返ることを検証する"""
+        monkeypatch.setattr("lib.utils.ensure_save_directory", lambda: str(tmp_path))
+        monkeypatch.setattr("lib.settings.get", lambda key: "{title}{dup}.png" if key == "save.filenamePreset" else None)
+        (tmp_path / "AppTitle.png").touch()
+
+        generated_path = capture._generate_output_path("AppTitle")
+
+        assert os.path.basename(generated_path) == "AppTitle (2).png"
 
     def test_generate_output_path_rejects_path_exceeding_max_length(self, monkeypatch):
         """Windows のパス最大長（259文字）を超過した場合に安全に None を返すことを検証する"""

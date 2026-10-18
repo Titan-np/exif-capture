@@ -1,119 +1,74 @@
+"""
+Windows・シェルと連携する操作（ショートカット作成、アクセントカラー取得、ファイル・フォルダを開く）をまとめる
+
+notifier / settings はこのモジュールを import しているため、循環importを避けて関数内で読み込む。
+"""
+
 import os
 import sys
 
+import lib.constants as constants
+import lib.paths as paths
 
-def is_executable() -> bool:
+
+def create_app_shortcut(shortcut_path: str, app_user_model_id: str | None = None):
     """
-    exe（PyInstallerでビルドした実行ファイル）として起動しているかを判定する
+    アプリを起動するショートカット（.lnk）を作成・上書きする
 
-    exe実行か開発時（Python実行）かの判定は、すべてこの関数で行う。
-
-    Returns:
-        bool: exe実行時はTrue、Python実行（開発時）はFalse
-    """
-    # PyInstaller は exe 実行時に sys.frozen を設定する
-    return getattr(sys, "frozen", False)
-
-
-def get_app_path(relative_path: str = ""):
-    """
-    アプリケーションのルートフォルダを基準に、相対パスを絶対パスに変換する
-
-    exe実行時はexeの配置フォルダ、開発時はリポジトリルートを基準とする。
-    PyInstallerのバンドルリソース（_MEIPASS）には対応しないため、
-    assetsの取得には get_asset_path() を使用すること。
+    スタートメニュー・スタートアップの両方から使うため、失敗時の扱いは呼び出し元に任せ、例外はそのまま送出する。
 
     Args:
-        relative_path (str): ルートからの相対パス（省略時はルートフォルダ自体を返す）
-
-    Returns:
-        str: 絶対パス
+        shortcut_path (str): 作成するショートカットの絶対パス
+        app_user_model_id (str, optional): ショートカットに設定する AUMID（System.AppUserModel.ID）。未指定時は設定しない
     """
-    if is_executable():
-        # PyInstaller実行時は、exe本体と同じ階層のフォルダを基準にする
-        base_directory = os.path.dirname(sys.executable)
+    import pythoncom
+    from win32com.propsys import propsys, pscon
+    from win32com.shell import shell, shellcon
+
+    # 1. 起動対象（exeまたはpythonスクリプト）・引数・アイコンを決定
+    # exe はアイコン未指定でも埋め込みアイコンが使われるため、開発時のみアイコンを指定する
+    # （assets のアイコンは exe 終了時に削除される一時フォルダ(_MEIPASS)にあり、ショートカットからは参照できない）
+    icon_path = None
+    if paths.is_executable():
+        target_path = sys.executable
+        arguments = ""
     else:
-        # 通常のPython実行時は、スクリプトがある場所(src/lib)の親の親(リポジトリルート)を基準にする
-        script_directory = os.path.dirname(os.path.abspath(__file__))
-        base_directory = os.path.dirname(os.path.dirname(script_directory))
+        # 開発時は pythonw.exe が存在すれば優先して使用し、コンソールウィンドウの表示を防ぐ
+        target_path = sys.executable
+        pythonw_candidate = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        if os.path.exists(pythonw_candidate):
+            target_path = pythonw_candidate
+        main_script = paths.get_app_path(os.path.join("src", "main.pyw"))
+        arguments = f'"{main_script}"'
+        icon_path = paths.get_app_icon_path()
 
-    return os.path.join(base_directory, relative_path) if relative_path else base_directory
+    # 2. COMライブラリを初期化
+    pythoncom.CoInitialize()
+    try:
+        # 3. ショートカット（IShellLink）を作成
+        shell_link = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None, pythoncom.CLSCTX_INPROC_SERVER, shell.IID_IShellLink)
+        shell_link.SetPath(target_path)
+        if arguments:
+            shell_link.SetArguments(arguments)
+        shell_link.SetWorkingDirectory(paths.get_app_path())
+        if icon_path:
+            shell_link.SetIconLocation(icon_path, 0)
+        shell_link.SetDescription(constants.APP_NAME)
 
+        # 4. ファイルに保存
+        persist_file = shell_link.QueryInterface(pythoncom.IID_IPersistFile)
+        persist_file.Save(shortcut_path, True)
 
-def get_asset_path(filename: str):
-    """
-    assets内のファイルパスを取得する
-
-    PyInstaller実行時はバンドルされた一時フォルダ(_MEIPASS)を参照するため、
-    get_app_path() とは異なるベースパスを使用する。
-    _MEIPASS は exe 終了時に削除されるため、アプリ終了後も参照されるパス（ショートカット等）には使わないこと。
-
-    Args:
-        filename (str): assetsフォルダ内のファイル名
-
-    Returns:
-        str: assetsフォルダ内のファイルの絶対パス
-    """
-    if is_executable():
-        # PyInstaller実行時は一時フォルダ(_MEIPASS)に展開されたassetsを参照する
-        return os.path.join(sys._MEIPASS, "assets", filename)
-    else:
-        # 開発時はリポジトリルート直下のassetsを参照する
-        return os.path.join(get_app_path(), "assets", filename)
-
-
-def get_icon_filename(version_string: str) -> str:
-    """
-    バージョン文字列に対応するアプリアイコンのファイル名を取得する
-
-    ビルド時（tools/build.py）にもビルド対象のバージョンで判定できるよう、バージョン文字列を引数で受け取る。
-
-    Args:
-        version_string (str): バージョン文字列（例: "v1.2.0"、"v1.2.0-beta.1"）
-
-    Returns:
-        str: beta版は "icon_beta.ico"、それ以外は "icon.ico"
-    """
-    # release.yml の Pre-release 判定と揃え、タグ名に 'beta' を含むかで判定する
-    if "beta" in version_string:
-        return "icon_beta.ico"
-    return "icon.ico"
-
-
-def get_app_icon_path() -> str:
-    """
-    実行形態とバージョンに対応するアプリアイコンの絶対パスを取得する
-
-    開発時（Python実行）は icon_dev.ico、exe実行時はバージョンに応じて icon_beta.ico / icon.ico を返す。
-
-    Returns:
-        str: assetsフォルダ内のアイコンファイルの絶対パス
-    """
-    # 開発時は、exe と見分けられるよう開発用アイコンを使う
-    if not is_executable():
-        return get_asset_path("icon_dev.ico")
-
-    # exe実行時は、埋め込まれたバージョンに応じて正式版 / beta版のアイコンを使う
-    # version は utils を import しているため、循環importを避けて関数内で読み込む
-    import lib.version as version
-
-    return get_asset_path(get_icon_filename(version.APP_VERSION))
-
-
-def expand_path(path: str) -> str:
-    """
-    チルダ（~）や環境変数を含むパス文字列を展開し、絶対パス相当の正規化されたパス文字列に変換する
-
-    Args:
-        path (str): 展開対象のパス文字列
-
-    Returns:
-        str: 展開・正規化後のパス文字列（空文字列の場合は空文字列）
-    """
-    if not path:
-        return ""
-    # チルダ（ユーザーホーム）と環境変数（%VAR%）を順次展開してパスを正規化
-    return os.path.normpath(os.path.expandvars(os.path.expanduser(path)))
+        # 5. AUMIDが指定された場合、ショートカットのプロパティに System.AppUserModel.ID を設定する
+        # Windows はこの ID をもとにトースト通知上部のヘッダーにアイコンを表示する
+        if app_user_model_id:
+            property_store = propsys.SHGetPropertyStoreFromParsingName(shortcut_path, None, shellcon.GPS_READWRITE, propsys.IID_IPropertyStore)
+            property_key = pscon.PKEY_AppUserModel_ID
+            property_value = propsys.PROPVARIANTType(app_user_model_id)
+            property_store.SetValue(property_key, property_value)
+            property_store.Commit()
+    finally:
+        pythoncom.CoUninitialize()
 
 
 def get_windows_accent_colors(fallback_color: str = "#228B22"):
@@ -219,7 +174,7 @@ def open_log_file(icon=None, item=None) -> bool:
         bool: ファイルを開く処理に成功した場合はTrue、失敗した場合はFalse
     """
     # ログファイルの絶対パスを取得
-    log_file_path = get_app_path(os.path.join("logs", "app.log"))
+    log_file_path = paths.get_app_path(os.path.join("logs", "app.log"))
 
     try:
         # ログフォルダおよびログファイルが存在しない場合は自動作成
@@ -254,7 +209,7 @@ def ensure_save_directory() -> str | None:
 
     # 保存先フォルダを設定から取得
     configured_directory = settings.get("save.directory")
-    target_directory = expand_path(configured_directory) if configured_directory else ""
+    target_directory = paths.expand_path(configured_directory) if configured_directory else ""
 
     if not target_directory:
         # パスが未設定または無効な場合はログに記録
