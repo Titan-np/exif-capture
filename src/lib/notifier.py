@@ -97,25 +97,28 @@ def _ensure_start_menu_shortcut():
         log(f"スタートメニューショートカットの登録・更新に失敗しました。\n{exception}")
 
 
-# 通知の文面作成に使う Windows 標準ライブラリ（_pin_xml_library で読み込み、終了まで保持する）
-_xml_library = None
+# COM のマルチスレッド環境をアプリ終了まで維持するための識別子（_keep_winrt_environment で取得し、解放しない）
+_apartment_usage_cookie = None
 
 
-def _pin_xml_library():
+def _keep_winrt_environment():
     """
-    通知の文面作成に使う Windows 標準ライブラリ（msxml6.dll）を読み込み、アプリ終了まで手放さずに保持する
+    通知機能が使う Windows の部品（DLL）群を、アプリ終了まで読み込んだまま維持する
 
-    通知をしばらく出さずにいると、このライブラリが Windows によってメモリから外されることがある。
+    通知を出すと、Windows の部品が「共有の作業場所（COM のマルチスレッドアパートメント）」に読み込まれる。
+    Windows 側の処理などがこの作業場所を一時的に使い終えると、作業場所ごと片付けられて部品も外されてしまう。
     通知ライブラリ（win11toast）は外されたことに気付かず次の通知で使おうとするため、アプリが強制終了してしまう。
-    アプリ側でも読み込んだまま保持しておくことで、外されないようにする。
+    起動時に作業場所の利用を宣言しておき、アプリ終了まで片付けられないようにする。
     """
-    global _xml_library
-    try:
-        _xml_library = ctypes.WinDLL("msxml6.dll")
-    except OSError as exception:
-        # msxml6.dllが読み込めない環境では、以降で通知を出そうとした際に通知失敗エラーになる
-        # 撮影・保存には影響しないため、ログ出力のみ行いアプリは続行させる
-        log(f"通知用ライブラリ (msxml6.dll) の読み込みに失敗しました。\n{exception}")
+    global _apartment_usage_cookie
+    cookie = ctypes.c_void_p()
+    result = ctypes.windll.combase.CoIncrementMTAUsage(ctypes.byref(cookie))
+    if result < 0:
+        # 維持できなかった環境では、以降で通知を出そうとした際に強制終了する可能性が残る
+        # 撮影・保存には影響しないため、事象再現時の調査用にログ出力のみ行いアプリは続行させる
+        log(f"通知用の実行環境の維持に失敗しました。(エラーコード: 0x{result & 0xFFFFFFFF:08X})")
+        return
+    _apartment_usage_cookie = cookie
 
 
 def _send(title, body=None, image=None, buttons=None, on_click=None):
@@ -324,5 +327,5 @@ def error(title, log_message: str):
 # モジュール読み込み時にスタートメニューショートカットを確認・作成する
 _ensure_start_menu_shortcut()
 
-# 最初の通知（起動通知）より前に、通知用ライブラリを保持しておく
-_pin_xml_library()
+# 最初の通知（起動通知）より前に、通知用の実行環境を維持しておく
+_keep_winrt_environment()
