@@ -120,7 +120,8 @@ def check_for_update(is_manual=False):
 
     Args:
         is_manual (bool, optional): ユーザー操作による確認かどうか。
-            True の場合は設定が「確認しない」でも正式版を対象に確認し、最新版である場合や失敗した場合も通知する
+            True の場合は設定が「確認しない」でも正式版を対象に確認する。
+            ただし通知の表示可否は各通知設定に従うため、「確認しない」設定では結果の通知は表示されない。
 
     Returns:
         str | None: 新しいバージョンのタグ名。新しいバージョンが無い場合や確認できなかった場合は None
@@ -153,7 +154,7 @@ def check_for_update(is_manual=False):
     if latest_release is None or parse_version(latest_release["tag_name"]) <= current_version:
         message = f"最新版を使用しています。({version.APP_VERSION})"
         if is_manual:
-            notifier.notify(message)
+            notifier.notify(message, category=notifier.NotificationCategory.UPDATE)
         else:
             notifier.log(message)
         return None
@@ -164,6 +165,7 @@ def check_for_update(is_manual=False):
         title=f"新しいバージョン ({latest_tag}) が公開されています。",
         message=f"現在のバージョン: {version.APP_VERSION}",
         buttons=[notifier.NotificationButton.OPEN_RELEASE_PAGE],
+        category=notifier.NotificationCategory.UPDATE,
     )
     return latest_tag
 

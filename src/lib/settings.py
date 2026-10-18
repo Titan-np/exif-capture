@@ -15,11 +15,13 @@ _SETTINGS_TEMPORARY_NAME = "settings.json.tmp"
 # 設定のデフォルト値
 _DEFAULT_SETTINGS = {
     "capture.triggerShortcut": "shift+print screen",
-    "capture.enableSystemNotification": True,
     "capture.soundVolume": 100,
     "save.directory": "~\\Pictures\\Screenshots",
     "save.filenamePreset": "{timestamp}_{title}.png",
     "save.embedDatetimeMetadata": True,
+    "notify.onCapture": True,
+    "notify.onAppEvent": True,
+    "notify.onError": True,
     "notify.updateCheck": "stable",
 }
 
@@ -29,6 +31,9 @@ _MIGRATION_MAP = {
     "save.directory": ["save_directory"],
     "save.filenamePreset": ["filename_preset"],
     "save.embedDatetimeMetadata": ["embed_datetime_metadata"],
+    "notify.onCapture": ["capture.enableSystemNotification"],
+    "notify.onAppEvent": ["capture.enableSystemNotification"],
+    "notify.onError": ["capture.enableSystemNotification"],
 }
 
 # 設定キーに対するバリデーションルール定義（キー → 検証関数名のリスト）
@@ -125,6 +130,7 @@ def load():
             message=f"{message}\n詳細はログファイルを参照してください。",
             log_message=f"{message}\n{exception}",
             buttons=[notifier.NotificationButton.OPEN_SETTINGS, notifier.NotificationButton.OPEN_LOG],
+            category=notifier.NotificationCategory.ERROR,
         )
 
         # 2-2. デフォルト設定を適用し、新規設定ファイルとして保存する
@@ -147,9 +153,10 @@ def load():
             loaded_value = loaded_data.pop(key)
         else:
             # 4-2. 旧キー名の設定値が存在する場合は、現キーの値として読み込み、上書き保存対象とする
+            # 1つの旧キーを複数の現キーへ引き継げるよう、ここでは取り除かずに参照のみ行う（手順7でまとめて取り除く）
             for old_key in _MIGRATION_MAP.get(key, []):
                 if old_key in loaded_data:
-                    loaded_value = loaded_data.pop(old_key)
+                    loaded_value = loaded_data[old_key]
                     needs_save = True
                     break
 
@@ -174,11 +181,18 @@ def load():
     _data.update(new_data)
     notifier.log(f"設定ファイルを読み込みました。({settings_file_path})")
 
-    # 7. 設定ファイル読み込み後に未知のキーが残っていれば、不要なキーが含まれていたと判定し、設定ファイルを保存対象とする
+    # 7. 旧キーをまとめて取り除く（現キーと旧キーが両方ある場合の旧キーも含む）
+    for old_keys in _MIGRATION_MAP.values():
+        for old_key in old_keys:
+            if old_key in loaded_data:
+                del loaded_data[old_key]
+                needs_save = True
+
+    # 8. 旧キーや未知のキーが残っていれば、ファイルから取り除くため保存対象とする
     if loaded_data:
         needs_save = True
 
-    # 8. 設定ファイル内に壊れている設定値が含まれていた場合、上書き前に設定ファイルを退避する
+    # 9. 設定ファイル内に壊れている設定値が含まれていた場合、上書き前に設定ファイルを退避する
     if invalid_keys:
         corrupted_filename = _backup_corrupted_file()
         message = f"元の設定ファイルを「{corrupted_filename}」に退避し、デフォルト設定を適用しました。"
@@ -189,9 +203,10 @@ def load():
             message=f"{message}\n詳細はログファイルを参照してください。",
             log_message=f"{message}\n{log_details}",
             buttons=[notifier.NotificationButton.OPEN_SETTINGS, notifier.NotificationButton.OPEN_LOG],
+            category=notifier.NotificationCategory.ERROR,
         )
 
-    # 9. 設定ファイルの更新が必要な場合、ファイルを保存する
+    # 10. 設定ファイルの更新が必要な場合、ファイルを保存する
     if needs_save:
         save()
 

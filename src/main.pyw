@@ -73,7 +73,7 @@ def _close_application(tray_icon_instance, menu_item_instance):
 
     # 通知領域からアイコンを削除し、アプリケーションの実行を終了する
     # settings.load() # 終了処理時は確実に終了させるため、設定ファイルの再読み込みは行わずメモリ上の設定を用いて通知する
-    notifier.notify("終了します。")
+    notifier.notify("終了します。", category=notifier.NotificationCategory.APP_EVENT)
     tray_icon_instance.stop()
 
 
@@ -112,6 +112,7 @@ def _launch_application():
         notifier.notify(
             title,
             f"ショートカットキー ({shortcut_key}) を押すとスクリーンショットを撮影します。",
+            category=notifier.NotificationCategory.APP_EVENT,
         )
 
         # ホットキー登録が完了した段階で、初回起動フラグを解除
@@ -138,6 +139,7 @@ def _launch_application():
             message=f"'{shortcut_key}' は他のアプリと競合している可能性があります。設定画面から別のキーに変更してください。",
             log_message=f"ショートカットキーの登録に失敗しました: {shortcut_key} (エラーコード: {error_code})",
             buttons=[notifier.NotificationButton.OPEN_SETTINGS, notifier.NotificationButton.OPEN_LOG],
+            category=notifier.NotificationCategory.ERROR,
         )
 
         # ホットキー登録が完了した段階で、初回起動フラグを解除

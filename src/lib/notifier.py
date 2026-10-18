@@ -29,6 +29,16 @@ class NotificationButton(StrEnum):
     OPEN_RELEASE_PAGE = "リリースページを開く"
 
 
+# 通知の種別
+class NotificationCategory(StrEnum):
+    """通知の種別。値は表示可否を決める設定キーで、settings.get() にそのまま渡せる。"""
+
+    CAPTURE = "notify.onCapture"
+    APP_EVENT = "notify.onAppEvent"
+    ERROR = "notify.onError"
+    UPDATE = "notify.updateCheck"
+
+
 def _ensure_start_menu_shortcut():
     """
     トースト通知のヘッダー（app_idの左）にアプリアイコンを表示させるため、
@@ -123,9 +133,14 @@ def _keep_winrt_environment():
     _apartment_usage_cookie = cookie
 
 
+# 通知処理専用のイベントループ（_send の初回呼び出し時に生成し、アプリ終了まで閉じない）
+_toast_event_loop = None
+_toast_event_loop_lock = threading.Lock()
+
+
 def _send(title, body=None, image=None, buttons=None, on_click=None):
     """
-    バックグラウンドスレッドでWindowsのトースト通知を送信・表示する内部関数
+    通知専用のイベントループ上でWindowsのトースト通知を送信・表示する内部関数
 
     Args:
         title (str): 通知のタイトル
@@ -134,45 +149,49 @@ def _send(title, body=None, image=None, buttons=None, on_click=None):
         buttons (list, optional): アクションボタンのリスト
         on_click (callable or str, optional): 通知本体やボタンクリック時に呼び出す関数、または開くURI
     """
+    global _toast_event_loop
 
-    def _worker():
-        try:
-            # トースト通知の引数を設定する
-            # app_id を指定することで、スタートメニューのショートカットと紐づきヘッダー左にアプリアイコンが表示される
-            toast_kwargs = {
-                "app_id": constants.APP_NAME,
-            }
-
-            # 通知本文・画像パス・ボタン・クリックイベントが指定された場合、引数に追加する
-            if body:
-                toast_kwargs["body"] = body
-            if image:
-                toast_kwargs["image"] = {"src": image}
-            if buttons:
-                toast_kwargs["buttons"] = buttons
-            if on_click:
-                toast_kwargs["on_click"] = on_click
-
-            # win11toast は通知が消えた後も Windows 側からコールバックが届くことがあり、
-            # 既に完了した処理に対して結果を書き込もうとしてエラーになる。
+    # 1. 通知専用のイベントループを初回のみ生成し、バックグラウンドスレッドで動かし続ける
+    # win11toast は通知の処理完了後も Windows 側から閉じた通知のイベント（dismissed 等）を遅れて受け取ることがあり、
+    # 通知ごとにループを閉じると、遅れたイベントが閉じたループへ渡され RuntimeError になるため閉じずに使い回す
+    with _toast_event_loop_lock:
+        if _toast_event_loop is None:
+            # 遅れたイベントは完了済みの処理へ結果を書き込もうとして InvalidStateError になる。
             # この無害なエラーだけを無視し、それ以外はデフォルト処理に委譲する例外ハンドラを設定する
             def _suppress_late_callback_error(event_loop, context):
                 if isinstance(context.get("exception"), asyncio.InvalidStateError):
                     return
                 event_loop.default_exception_handler(context)
 
-            loop = asyncio.new_event_loop()
-            loop.set_exception_handler(_suppress_late_callback_error)
-            try:
-                loop.run_until_complete(toast_async(title, **toast_kwargs))
-            finally:
-                loop.close()
+            _toast_event_loop = asyncio.new_event_loop()
+            _toast_event_loop.set_exception_handler(_suppress_late_callback_error)
+            threading.Thread(target=_toast_event_loop.run_forever, daemon=True).start()
 
-        except Exception as exception:
-            log(f"通知の表示に失敗しました。\n{exception}")
+    # 2. トースト通知の引数を設定する
+    # app_id を指定することで、スタートメニューのショートカットと紐づきヘッダー左にアプリアイコンが表示される
+    # on_dismissed は未指定だと win11toast が閉じた理由をコンソールへ print するため、何もしない関数を渡す
+    toast_kwargs = {
+        "app_id": constants.APP_NAME,
+        "on_dismissed": lambda *args: None,
+    }
 
-    # 呼び出し元をブロックしないよう別スレッドで通知処理を実行する
-    threading.Thread(target=_worker, daemon=True).start()
+    # 通知本文・画像パス・ボタン・クリックイベントが指定された場合、引数に追加する
+    if body:
+        toast_kwargs["body"] = body
+    if image:
+        toast_kwargs["image"] = {"src": image}
+    if buttons:
+        toast_kwargs["buttons"] = buttons
+    if on_click:
+        toast_kwargs["on_click"] = on_click
+
+    # 3. 呼び出し元をブロックしないよう、通知処理をイベントループへ登録し、失敗時はログに残す
+    def _log_failure(future):
+        if future.exception() is not None:
+            log(f"通知の表示に失敗しました。\n{future.exception()}")
+
+    future = asyncio.run_coroutine_threadsafe(toast_async(title, **toast_kwargs), _toast_event_loop)
+    future.add_done_callback(_log_failure)
 
 
 def log(message: str):
@@ -232,9 +251,12 @@ def notify(
     log_message: str = None,
     buttons: list = None,
     image_path: str = None,
+    *,
+    category: NotificationCategory,
 ):
     """
     Windowsトースト通知とログ出力を同時に行う
+    通知の種別に対応する設定がオフの場合は、ログ出力のみ行いトースト通知は表示しない
 
     Args:
         title (str): 通知のタイトル
@@ -242,18 +264,22 @@ def notify(
         log_message (str, optional): ログ専用のメッセージ。指定時はmessageの代わりにログファイルへ出力する
         buttons (list[NotificationButton], optional): 表示するボタンのリスト
         image_path (str, optional): キャプチャ画像などの絶対パス
+        category (NotificationCategory): 通知の種別。設定で制御できない通知を作らないよう、既定値を設けず必須とする
     """
     # 1. ログを出力
     log_message = log_message if log_message is not None else message
     formatted_log_text = f"{title}\n{log_message}" if log_message is not None else title
     log(formatted_log_text)
 
-    # 2. 設定を確認し、Windows通知がオフであれば以降の処理を行わない
+    # 2. 通知の種別に対応する設定を確認し、オフであれば以降の処理を行わない
     # 循環参照防止のためメソッド内でインポート
     # 多重読み込みを防ぐため、ここではファイル再読み込み（settings.load()）を行わずメモリ上の設定を参照する
     import lib.settings as settings
+    import lib.updater as updater
 
-    if not settings.get("capture.enableSystemNotification"):
+    # スイッチ項目は False、アップデート確認は「確認しない」をオフとみなす
+    setting_value = settings.get(category)
+    if setting_value is False or setting_value == updater.UpdateCheckMode.DISABLED:
         return
 
     # 3. ボタンとクリックイベントを設定
@@ -326,6 +352,7 @@ def error(title, log_message: str):
         message="エラーが発生しました。詳細はログファイルを参照してください。",
         log_message=log_message,
         buttons=[NotificationButton.OPEN_LOG],
+        category=NotificationCategory.ERROR,
     )
 
 

@@ -166,11 +166,14 @@ class TestSettingsManagerIO:
         """既存の有効な設定ファイルから設定値を正しく読み込めることを検証する"""
         custom_settings = {
             "capture.triggerShortcut": "ctrl+shift+f12",
-            "capture.enableSystemNotification": False,
             "capture.soundVolume": 50,
             "save.directory": "D:\\CustomScreenshots",
             "save.filenamePreset": "custom_{timestamp}.png",
             "save.embedDatetimeMetadata": False,
+            "notify.onCapture": False,
+            "notify.onAppEvent": True,
+            "notify.onError": False,
+            "notify.updateCheck": "prerelease",
         }
 
         # 設定ファイルを事前作成
@@ -185,6 +188,10 @@ class TestSettingsManagerIO:
         assert settings.get("capture.soundVolume") == 50
         assert settings.get("save.directory") == "D:\\CustomScreenshots"
         assert settings.get("save.embedDatetimeMetadata") is False
+        assert settings.get("notify.onCapture") is False
+        assert settings.get("notify.onAppEvent") is True
+        assert settings.get("notify.onError") is False
+        assert settings.get("notify.updateCheck") == "prerelease"
 
     def test_load_migrates_old_key_names(self, isolated_settings_manager):
         """旧バージョンのキー名が設定ファイルに含まれている場合、新キー名へ自動移行されることを検証する"""
@@ -213,6 +220,52 @@ class TestSettingsManagerIO:
             migrated_content = json.load(file)
             assert "trigger_shortcut" not in migrated_content
             assert "capture.triggerShortcut" in migrated_content
+
+    def test_load_splits_old_notification_key_into_categories(self, isolated_settings_manager):
+        """旧キー capture.enableSystemNotification の値が、種別ごとの通知設定3項目すべてへ引き継がれることを検証する"""
+        legacy_settings = {
+            "capture.triggerShortcut": "ctrl+alt+a",
+            "capture.enableSystemNotification": False,
+        }
+
+        # 旧形式の設定ファイルを作成
+        with open(settings._get_settings_path(), "w", encoding="utf-8") as file:
+            json.dump(legacy_settings, file, indent=4)
+
+        # 読み込みを実行（マイグレーションが自動実行される）
+        settings.load()
+
+        # 1つの旧キーの値が、分割先の3項目すべてに引き継がれていることを確認
+        assert settings.get("notify.onCapture") is False
+        assert settings.get("notify.onAppEvent") is False
+        assert settings.get("notify.onError") is False
+
+        # ファイルへ保存され、旧キーが除去されていることを確認
+        with open(settings._get_settings_path(), "r", encoding="utf-8") as file:
+            migrated_content = json.load(file)
+            assert "capture.enableSystemNotification" not in migrated_content
+            assert migrated_content["notify.onCapture"] is False
+
+    def test_load_removes_old_key_when_new_key_exists(self, isolated_settings_manager):
+        """現キーと旧キーが両方存在する場合、現キーの値を優先し、旧キーはファイルから除去されることを検証する"""
+        mixed_settings = {
+            "notify.onCapture": True,
+            "capture.enableSystemNotification": False,
+        }
+
+        # 現キーと旧キーが混在した設定ファイルを作成
+        with open(settings._get_settings_path(), "w", encoding="utf-8") as file:
+            json.dump(mixed_settings, file, indent=4)
+
+        settings.load()
+
+        # 現キーがある項目は現キーの値、無い項目は旧キーの値になっていることを確認
+        assert settings.get("notify.onCapture") is True
+        assert settings.get("notify.onAppEvent") is False
+
+        # 旧キーがファイルから除去されていることを確認
+        with open(settings._get_settings_path(), "r", encoding="utf-8") as file:
+            assert "capture.enableSystemNotification" not in json.load(file)
 
     def test_load_handles_corrupted_json_and_recovers(self, isolated_settings_manager):
         """JSON構文が破壊されている設定ファイルを読み込んだ際、退避してデフォルト値で復旧することを検証する"""

@@ -124,6 +124,7 @@ class TestCheckForUpdate:
         notify_arguments = mock_notifier_actions["notify"].call_args.kwargs
         assert "v1.2.0-beta.1" in notify_arguments["title"]
         assert notify_arguments["buttons"] == [updater.notifier.NotificationButton.OPEN_RELEASE_PAGE]
+        assert notify_arguments["category"] == updater.notifier.NotificationCategory.UPDATE
 
     def test_does_not_notify_when_up_to_date(self, update_environment, mock_notifier_actions):
         """「正式版のみ確認する」設定で正式版が最新の場合、自動確認では通知されないことを検証する"""

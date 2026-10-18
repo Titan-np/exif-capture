@@ -100,6 +100,7 @@ def _generate_output_path(window_title):
             title="撮影に失敗しました。",
             message="保存先フォルダを準備できませんでした。詳細はログファイルを参照してください。",
             buttons=[notifier.NotificationButton.OPEN_LOG],
+            category=notifier.NotificationCategory.ERROR,
         )
         return None
 
@@ -122,6 +123,7 @@ def _generate_output_path(window_title):
             title="撮影に失敗しました。",
             message="ファイル名プリセットの書式が不正です。設定を見直してください。",
             buttons=[notifier.NotificationButton.OPEN_SETTINGS, notifier.NotificationButton.OPEN_LOG],
+            category=notifier.NotificationCategory.ERROR,
         )
         return None
 
@@ -133,6 +135,7 @@ def _generate_output_path(window_title):
             title="撮影に失敗しました。",
             message=f"保存先パスが最大長({_WINDOWS_MAX_PATH_LENGTH}文字)を超えています。設定を見直してください。\n({output_path})",
             buttons=[notifier.NotificationButton.OPEN_SETTINGS, notifier.NotificationButton.OPEN_LOG],
+            category=notifier.NotificationCategory.ERROR,
         )
         return None
 
@@ -247,6 +250,7 @@ def capture_screenshot():
             message=os.path.basename(output_path),
             buttons=[notifier.NotificationButton.OPEN_IMAGE, notifier.NotificationButton.OPEN_FOLDER],
             image_path=output_path,
+            category=notifier.NotificationCategory.CAPTURE,
         )
 
     except Exception as exception:

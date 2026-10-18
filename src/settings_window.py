@@ -17,6 +17,15 @@ import lib.utils as utils
 # UIフォント
 _SYS_FONT = ("Meiryo UI", 13)
 _HINT_FONT = ("Meiryo UI", 11)
+_HEADING_FONT = ("Meiryo UI", 14, "bold")
+_TAB_FONT = ("Meiryo UI", 13, "bold")
+
+# 設定キーの接頭辞に対応するタブ名（タブの生成と、入力エラーがあるタブの案内に使用する）
+_TAB_NAMES_BY_KEY_PREFIX = {
+    "capture": "撮影",
+    "save": "保存",
+    "notify": "全般",
+}
 
 # アップデート確認の対象範囲の表示文言（保存値 → 表示文言）
 _UPDATE_CHECK_MODE_LABELS = {
@@ -107,14 +116,15 @@ class _SettingRowBuilder:
         self._row_area = ctk.CTkFrame(parent, fg_color="transparent")
         self._row_area.pack(fill="x", pady=(0, 15))
 
-        # 見出しが存在する場合はラベルと横並び用の内部領域を作成
+        # 見出しが存在する場合はラベルを作成
         if label_text:
             label = ctk.CTkLabel(self._row_area, text=label_text, font=_SYS_FONT)
             label.pack(anchor="w", pady=(0, 5))
-            self._content_area = ctk.CTkFrame(self._row_area, fg_color="transparent")
-            self._content_area.pack(fill="x")
-        else:
-            self._content_area = self._row_area
+
+        # 入力部品を横並びにする内部領域を作成
+        # 見出しが無い場合も作成しておくことで、後から追加する入力部品が補足テキストより上に配置される
+        self._content_area = ctk.CTkFrame(self._row_area, fg_color="transparent")
+        self._content_area.pack(fill="x")
 
         # 補足テキストが存在する場合は下部に追加
         if hint_text:
@@ -308,13 +318,14 @@ class SettingsWindow(ctk.CTk):
         self._setting_items = {}
         self._shortcut_recorder = None
 
-        # 適用・保存ボタンの参照を保持（バリデーション結果で活性/非活性を制御するため）
+        # 適用・保存ボタンと入力エラー案内ラベルの参照を保持（バリデーション結果で表示を制御するため）
         self._button_apply = None
         self._button_save = None
+        self._validation_summary_label = None
 
         # ウィンドウのタイトル・サイズを設定
         self.title(f"{constants.APP_NAME} 設定")
-        self.geometry("500x680")
+        self.geometry("500x480")
         self.resizable(False, False)
 
         # ウィンドウアイコン・タスクバーアイコンの設定
@@ -333,28 +344,50 @@ class SettingsWindow(ctk.CTk):
         # （上部のコンテンツの高さが増減しても、下部ボタン領域が押しつぶされて縮小するのを防ぐため）
         self._build_button_area()
 
-        # 画面全体を覆う領域（余白を持たせる）
-        self.main_area = ctk.CTkFrame(self, fg_color="transparent")
-        self.main_area.pack(fill="both", expand=True, padx=20, pady=(20, 0))
+        # 設定項目を分類して表示するタブ領域（余白を持たせる）
+        # タブの切り替えボタンは既定だと中央寄せの並んだボタンに見えるため、左寄せにし、
+        # 未選択のタブと枠の色をタブ領域と同じ色にすることで、選択中のタブだけが浮き出るタブらしい見た目にする
+        tab_area_color = ctk.ThemeManager.theme["CTkFrame"]["fg_color"]
+        tab_view = ctk.CTkTabview(
+            self,
+            anchor="w",
+            fg_color=tab_area_color,
+            segmented_button_fg_color=tab_area_color,
+            segmented_button_unselected_color=tab_area_color,
+            segmented_button_selected_color=self._accent_color,
+            segmented_button_selected_hover_color=self._hover_color,
+            segmented_button_font=_TAB_FONT,
+        )
+        tab_view.pack(fill="both", expand=True, padx=20, pady=(10, 0))
+        capture_tab = tab_view.add(_TAB_NAMES_BY_KEY_PREFIX["capture"])
+        save_tab = tab_view.add(_TAB_NAMES_BY_KEY_PREFIX["save"])
+        general_tab = tab_view.add(_TAB_NAMES_BY_KEY_PREFIX["notify"])
 
-        # 各設定項目を追加
-        self._add_shortcut_field()
-        self._add_volume_field()
-        self._add_directory_field()
-        self._add_filename_preset_field()
-        self._add_metadata_toggle_field()
-        self._add_windows_notification_toggle_field()
-        self._add_update_check_mode_field()
+        # 「撮影」タブの設定項目を追加
+        self._add_shortcut_field(capture_tab)
+        self._add_volume_field(capture_tab)
+
+        # 「保存」タブの設定項目を追加
+        self._add_directory_field(save_tab)
+        self._add_filename_preset_field(save_tab)
+        self._add_metadata_toggle_field(save_tab)
+
+        # 「全般」タブの設定項目を、見出しで区切って追加
+        self._add_section_heading(general_tab, "Windows通知")
+        self._add_notification_toggle_fields(general_tab)
+        self._add_section_heading(general_tab, "アップデート")
+        self._add_update_check_mode_field(general_tab)
 
         # 初期表示時にバリデーションを実行する
         self._run_validation()
 
-    def _create_row_builder(self, key, label_text=None, hint_text=None):
+    def _create_row_builder(self, tab_frame, key, label_text=None, hint_text=None):
         """
         設定項目ビルダーを生成するヘルパー関数
         バリデーションルールの有無を settings_manager から判定し、対象項目の場合は自動でバリデーションを有効化する
 
         Args:
+            tab_frame: 設定項目を配置するタブの領域
             key (str): 設定キー
             label_text (str, optional): 画面に表示する見出しテキスト
             hint_text (str, optional): 項目下部に表示する補足テキスト
@@ -363,7 +396,7 @@ class SettingsWindow(ctk.CTk):
             _SettingRowBuilder: 行ビルダーのインスタンス
         """
         builder = _SettingRowBuilder(
-            parent=self.main_area,
+            parent=tab_frame,
             key=key,
             label_text=label_text,
             hint_text=hint_text,
@@ -376,7 +409,18 @@ class SettingsWindow(ctk.CTk):
 
         return builder
 
-    def _add_shortcut_field(self):
+    def _add_section_heading(self, tab_frame, text):
+        """
+        タブ内の設定項目を区切る見出しを追加する
+
+        Args:
+            tab_frame: 見出しを配置するタブの領域
+            text (str): 見出しテキスト
+        """
+        heading_label = ctk.CTkLabel(tab_frame, text=text, font=_HEADING_FONT)
+        heading_label.pack(anchor="w", pady=(0, 5))
+
+    def _add_shortcut_field(self, tab_frame):
         """ショートカットキー設定項目を追加する"""
         key = "capture.triggerShortcut"
 
@@ -433,6 +477,7 @@ class SettingsWindow(ctk.CTk):
 
         setting_row = (
             self._create_row_builder(
+                tab_frame=tab_frame,
                 key=key,
                 label_text="ショートカットキー:",
                 hint_text="記録ボタン押下後、設定したいキーを押してください。\nEscキーまたはキャンセルボタンで中断",
@@ -443,7 +488,7 @@ class SettingsWindow(ctk.CTk):
         )
         self._setting_items[key] = setting_row
 
-    def _add_volume_field(self):
+    def _add_volume_field(self, tab_frame):
         """音量設定項目を追加する"""
         key = "capture.soundVolume"
 
@@ -469,14 +514,14 @@ class SettingsWindow(ctk.CTk):
             capture.play_capture_sound(volume=volume)
 
         setting_row = (
-            self._create_row_builder(key=key, label_text="撮影時の通知音量:")
+            self._create_row_builder(tab_frame=tab_frame, key=key, label_text="撮影時の通知音量:")
             .add_option_menu(values=volume_options, initial_value=initial_option)
             .add_button(text="テスト再生", width=100, command=test_sound)
             .build()
         )
         self._setting_items[key] = setting_row
 
-    def _add_directory_field(self):
+    def _add_directory_field(self, tab_frame):
         """保存先フォルダ設定項目を追加する"""
         key = "save.directory"
 
@@ -495,18 +540,19 @@ class SettingsWindow(ctk.CTk):
                 entry.insert(0, selected_dir)
 
         setting_row = (
-            self._create_row_builder(key=key, label_text="保存先フォルダ:")
+            self._create_row_builder(tab_frame=tab_frame, key=key, label_text="保存先フォルダ:")
             .add_entry(initial_value=settings.get(key))
             .add_button(text="参照...", width=80, command=browse_directory)
             .build()
         )
         self._setting_items[key] = setting_row
 
-    def _add_filename_preset_field(self):
+    def _add_filename_preset_field(self, tab_frame):
         """ファイル名プリセット設定項目を追加する"""
         key = "save.filenamePreset"
         self._setting_items[key] = (
             self._create_row_builder(
+                tab_frame=tab_frame,
                 key=key,
                 label_text="ファイル名プリセット:",
                 hint_text="{timestamp}: 撮影日時 {timestamp:%Y%m%d} などで書式カスタムが可能です\n{title}: ウィンドウタイトル",
@@ -515,11 +561,11 @@ class SettingsWindow(ctk.CTk):
             .build()
         )
 
-    def _add_metadata_toggle_field(self):
+    def _add_metadata_toggle_field(self, tab_frame):
         """撮影日時のEXIFメタデータ埋め込み設定スイッチを追加する"""
         key = "save.embedDatetimeMetadata"
         self._setting_items[key] = (
-            self._create_row_builder(key=key)
+            self._create_row_builder(tab_frame=tab_frame, key=key)
             .add_switch(
                 text="撮影日時のEXIFメタデータを埋め込む",
                 is_selected=bool(settings.get(key)),
@@ -527,19 +573,26 @@ class SettingsWindow(ctk.CTk):
             .build()
         )
 
-    def _add_windows_notification_toggle_field(self):
-        """Windowsの通知設定スイッチを追加する"""
-        key = "capture.enableSystemNotification"
-        self._setting_items[key] = (
-            self._create_row_builder(key=key)
-            .add_switch(
-                text="Windowsの通知を表示する",
-                is_selected=bool(settings.get(key)),
-            )
-            .build()
-        )
+    def _add_notification_toggle_fields(self, tab_frame):
+        """通知の種別ごとのWindows通知設定スイッチを追加する"""
+        # (設定キー, スイッチの文言, 補足テキスト) の組
+        notification_toggles = [
+            ("notify.onCapture", "撮影時に通知する", None),
+            ("notify.onAppEvent", "起動・終了時やショートカットキー変更時に通知する", None),
+            ("notify.onError", "エラー発生時に通知する", "オフにすると、撮影の失敗などはログファイルでのみ確認できます。"),
+        ]
 
-    def _add_update_check_mode_field(self):
+        for key, switch_text, hint_text in notification_toggles:
+            self._setting_items[key] = (
+                self._create_row_builder(tab_frame=tab_frame, key=key, hint_text=hint_text)
+                .add_switch(
+                    text=switch_text,
+                    is_selected=bool(settings.get(key)),
+                )
+                .build()
+            )
+
+    def _add_update_check_mode_field(self, tab_frame):
         """アップデート確認の対象範囲を選ぶドロップダウンを追加する"""
         key = "notify.updateCheck"
 
@@ -547,7 +600,12 @@ class SettingsWindow(ctk.CTk):
         initial_label = _UPDATE_CHECK_MODE_LABELS.get(settings.get(key), _UPDATE_CHECK_MODE_LABELS[updater.UpdateCheckMode.STABLE])
 
         self._setting_items[key] = (
-            self._create_row_builder(key=key, label_text="アップデートの確認:")
+            self._create_row_builder(
+                tab_frame=tab_frame,
+                key=key,
+                label_text="アップデートの確認:",
+                hint_text="新しいバージョンが公開されている場合に通知します。",
+            )
             .add_option_menu(values=list(_UPDATE_CHECK_MODE_LABELS.values()), initial_value=initial_label)
             .build()
         )
@@ -558,7 +616,18 @@ class SettingsWindow(ctk.CTk):
         """
         # ボタン用領域（画面下部に配置）
         buttons_area = ctk.CTkFrame(self, fg_color="transparent")
-        buttons_area.pack(side="bottom", fill="x", pady=20)
+        buttons_area.pack(side="bottom", fill="x", pady=(5, 20))
+
+        # 表示中でないタブの入力エラーに気付けるよう、エラーのあるタブ名をボタンの上に案内するラベル
+        # 表示時にボタンが押し下げられないよう、エラーが無い時も高さを確保しておく
+        self._validation_summary_label = ctk.CTkLabel(
+            buttons_area,
+            text="",
+            text_color="#FF6B6B",
+            font=_HINT_FONT,
+            height=18,
+        )
+        self._validation_summary_label.pack(pady=(0, 5))
 
         # 全体を中央揃えにするためのダミー領域を利用しつつ、packで配置
         inner_area = ctk.CTkFrame(buttons_area, fg_color="transparent")
@@ -598,7 +667,8 @@ class SettingsWindow(ctk.CTk):
         全設定項目のバリデーションを実行し、エラー表示とボタン状態を更新する
         エラーラベルはあらかじめ枠を確保して配置されているため、text の更新のみを行いレイアウトのズレを防ぐ
         """
-        has_error = False
+        # 1. 各項目のバリデーションを実行し、項目ごとのエラー表示を更新しつつ、エラーのあるタブ名を集める
+        error_tab_names = []
         for key, setting_row in self._setting_items.items():
             if setting_row.error_label is None:
                 continue
@@ -609,11 +679,22 @@ class SettingsWindow(ctk.CTk):
 
             if error:
                 setting_row.error_label.configure(text=error)
-                has_error = True
+                # 設定キーの接頭辞（例: "save.directory" の "save"）から所属タブ名を求める
+                tab_name = _TAB_NAMES_BY_KEY_PREFIX[key.split(".")[0]]
+                if tab_name not in error_tab_names:
+                    error_tab_names.append(tab_name)
             else:
                 setting_row.error_label.configure(text="")
 
-        # エラーがある場合は適用・保存ボタンを非活性にする
+        # 2. エラーのあるタブ名をボタン上部に案内する（例: 「撮影」「保存」タブに入力エラーがあります。）
+        has_error = bool(error_tab_names)
+        if self._validation_summary_label:
+            summary_text = ""
+            if has_error:
+                summary_text = "".join(f"「{tab_name}」" for tab_name in error_tab_names) + "タブに入力エラーがあります。"
+            self._validation_summary_label.configure(text=summary_text)
+
+        # 3. エラーがある場合は適用・保存ボタンを非活性にする
         state = "disabled" if has_error else "normal"
         if self._button_apply:
             self._button_apply.configure(state=state)
@@ -719,6 +800,7 @@ def open_settings_window(icon=None, item=None):
             message="エラーが発生しました。詳細はログファイルを参照してください。",
             log_message=f"エラーが発生しました。\n{exception}",
             buttons=[notifier.NotificationButton.OPEN_LOG],
+            category=notifier.NotificationCategory.ERROR,
         )
 
 

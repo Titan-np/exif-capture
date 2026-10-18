@@ -98,6 +98,8 @@ class Manager:
         self._hotkey_thread = None
         self._hotkey_thread_id = None
         self._is_hotkey_registered = False
+        # 登録中のキーの組み合わせ (修飾キーフラグ, 仮想キーコード)。再読み込み時に変更有無を判定するために保持する
+        self._registered_key_combination = None
 
     @classmethod
     def _parse_shortcut_string(cls, shortcut_string):
@@ -204,6 +206,7 @@ class Manager:
 
         if success:
             self._is_hotkey_registered = True
+            self._registered_key_combination = (modifiers, virtual_key_code)
             notifier.log(f"ショートカットキーを登録しました: {shortcut_string} (MOD: 0x{modifiers:X}, VK: 0x{virtual_key_code:X})")
             # 登録成功を呼び出し元（起動通知やトレイアイコン状態更新など）へ通知
             if self._on_registration_success:
@@ -224,6 +227,7 @@ class Manager:
         if self._is_hotkey_registered:
             user32.UnregisterHotKey(None, self._HOTKEY_IDENTIFIER)
             self._is_hotkey_registered = False
+            self._registered_key_combination = None
             notifier.log("ショートカットキーの登録を解除しました。")
 
     def _message_loop(self):
@@ -256,10 +260,18 @@ class Manager:
             # 設定変更に伴うホットキー再読み込み要求（WM_USER_RELOAD_HOTKEY）を検知
             elif message_structure.message == self._WM_USER_RELOAD_HOTKEY:
                 notifier.log("ホットキーの再読み込み要求を受信しました。")
-                self._unregister_hotkey()
+                # 他の設定項目の変更もメインプロセスへ反映させるため、キーの変更有無に関わらず設定ファイルは再読み込みする
                 settings.load()
                 new_shortcut = settings.get("capture.triggerShortcut")
-                self._register_hotkey(new_shortcut)
+
+                # 登録中のキーと同じ組み合わせであれば、解除・再登録と変更通知を行わない
+                # 表記揺れ（例: "print screen" と "print_screen"）を同一とみなすため、文字列ではなく解析結果で比較する
+                # 前回の登録に失敗している場合は、競合が解消されている可能性があるため再登録を試みる
+                if self._is_hotkey_registered and self._parse_shortcut_string(new_shortcut) == self._registered_key_combination:
+                    notifier.log("ショートカットキーに変更がないため、再登録を省略しました。")
+                else:
+                    self._unregister_hotkey()
+                    self._register_hotkey(new_shortcut)
 
             user32.TranslateMessage(ctypes.byref(message_structure))
             user32.DispatchMessageW(ctypes.byref(message_structure))

@@ -246,6 +246,7 @@ def open_save_directory(icon=None, item=None) -> bool:
             title="保存先フォルダを開けませんでした。",
             message="保存先フォルダを準備できませんでした。詳細はログファイルを参照してください。",
             buttons=[notifier.NotificationButton.OPEN_LOG, notifier.NotificationButton.OPEN_SETTINGS],
+            category=notifier.NotificationCategory.ERROR,
         )
         return False
 
