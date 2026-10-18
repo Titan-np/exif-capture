@@ -41,7 +41,8 @@ class TestNotifyCategory:
         _original_notify("テスト通知", category=category)
 
         notifier._send.assert_not_called()
-        mock_notifier_actions["log"].assert_called_once()
+        # fixture の設定ファイル作成時のログも同じモックに記録されるため、回数ではなく最後の呼び出し内容で確認する
+        mock_notifier_actions["log"].assert_called_with("テスト通知")
 
     def test_other_category_setting_does_not_affect(self, isolated_settings_manager):
         """他の種別の設定がオフでも、対象の種別の設定がオンなら送信されることを検証する"""
