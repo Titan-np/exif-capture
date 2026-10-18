@@ -58,6 +58,21 @@ class TestAppPaths:
 
         assert icon_path == expected_assets_directory
 
-        # 開発用ファイル名指定時の切り替え動作確認
-        dev_icon_path = utils.get_asset_path("icon.ico", "icon_dev.ico")
-        assert dev_icon_path == os.path.join(utils.get_app_path(), "assets", "icon_dev.ico")
+    def test_get_app_icon_path_in_development_environment(self):
+        """非凍結（通常Python実行）環境において、開発用アイコン（icon_dev.ico）のパスが返ることを検証する"""
+        app_icon_path = utils.get_app_icon_path()
+        assert app_icon_path == os.path.join(utils.get_app_path(), "assets", "icon_dev.ico")
+
+
+class TestIconFilename:
+    """
+    バージョンに応じたアイコンファイル名の選択（get_icon_filename）に関するテストクラス
+    """
+
+    def test_stable_version_uses_default_icon(self):
+        """正式版のタグ名で icon.ico が選ばれることを検証する"""
+        assert utils.get_icon_filename("v1.2.0") == "icon.ico"
+
+    def test_beta_version_uses_beta_icon(self):
+        """beta版のタグ名で icon_beta.ico が選ばれることを検証する"""
+        assert utils.get_icon_filename("v1.2.0-beta.1") == "icon_beta.ico"

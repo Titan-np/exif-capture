@@ -331,8 +331,8 @@ class SettingsWindow(ctk.CTk):
         # ウィンドウアイコン・タスクバーアイコンの設定
         # WindowsのタスクバーでPython標準アイコンになるのを防ぐため、固有AppUserModelID(AUMID)を設定
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(constants.APP_SETTINGS_USER_MODEL_ID)
-        # アイコンを取得・設定
-        icon_path = utils.get_asset_path("icon.ico", "icon_dev.ico")
+        # 実行形態とバージョンに対応するアイコンを取得・設定
+        icon_path = utils.get_app_icon_path()
         self.iconbitmap(icon_path)
 
         # 外観を設定

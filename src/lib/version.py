@@ -17,7 +17,7 @@ def get_app_version() -> str:
     アプリケーションのバージョン文字列を取得する
 
     優先順位:
-    1. ビルド時に埋め込まれた _version.py（exe実行時およびビルド直後）
+    1. ビルド時に埋め込まれた _version.py（exe実行時のみ）
     2. CI環境（GitHub Actions等）で渡される環境変数
     3. Gitコマンドによる直近のタグ名（開発環境でのスクリプト直接実行時）
     4. フォールバック定数文字列（GitタグやGit環境が存在しない場合）
@@ -25,13 +25,15 @@ def get_app_version() -> str:
     Returns:
         str: バージョン文字列（例: "v1.1.2-beta.1"、失敗時は "バージョン番号取得失敗"）
     """
-    # 1. ビルド時にPyInstallerバンドル対象として自動生成されたファイルが存在すれば最優先で参照
-    try:
-        from _version import APP_VERSION as EMBEDDED_VERSION
+    # 1. exe実行時は、ビルド時にPyInstallerバンドル対象として自動生成されたファイルを最優先で参照
+    # （ビルド中断で src/_version.py が残っても、開発時に古いバージョンを拾わないよう exe 実行時に限定する）
+    if utils.is_executable():
+        try:
+            from _version import APP_VERSION as EMBEDDED_VERSION
 
-        return EMBEDDED_VERSION
-    except ImportError:
-        pass
+            return EMBEDDED_VERSION
+        except ImportError:
+            pass
 
     # 2. GitHub Actions等のCI環境で環境変数が指定されている場合はそれを参照
     environment_version = os.environ.get("GITHUB_REF_NAME") or os.environ.get("EXIF_CAPTURE_VERSION")

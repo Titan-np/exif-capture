@@ -30,8 +30,8 @@ def _create_tray_icon_image():
     Returns:
         PIL.Image.Image: 生成されたアイコン画像
     """
-    # アイコン保存先パスを取得
-    icon_path = utils.get_asset_path("icon.ico", "icon_dev.ico")
+    # 実行形態とバージョンに対応するアイコンのパスを取得
+    icon_path = utils.get_app_icon_path()
 
     try:
         # アイコン画像を読み込む

@@ -259,25 +259,35 @@ class Manager:
 
             # 設定変更に伴うホットキー再読み込み要求（WM_USER_RELOAD_HOTKEY）を検知
             elif message_structure.message == self._WM_USER_RELOAD_HOTKEY:
-                notifier.log("ホットキーの再読み込み要求を受信しました。")
-                # 他の設定項目の変更もメインプロセスへ反映させるため、キーの変更有無に関わらず設定ファイルは再読み込みする
-                settings.load()
-                new_shortcut = settings.get("capture.triggerShortcut")
-
-                # 登録中のキーと同じ組み合わせであれば、解除・再登録と変更通知を行わない
-                # 表記揺れ（例: "print screen" と "print_screen"）を同一とみなすため、文字列ではなく解析結果で比較する
-                # 前回の登録に失敗している場合は、競合が解消されている可能性があるため再登録を試みる
-                if self._is_hotkey_registered and self._parse_shortcut_string(new_shortcut) == self._registered_key_combination:
-                    notifier.log("ショートカットキーに変更がないため、再登録を省略しました。")
-                else:
-                    self._unregister_hotkey()
-                    self._register_hotkey(new_shortcut)
+                self._reload_hotkey()
 
             user32.TranslateMessage(ctypes.byref(message_structure))
             user32.DispatchMessageW(ctypes.byref(message_structure))
 
         # スレッド終了時に登録済みホットキーを確実に解除
         self._unregister_hotkey()
+
+    def _reload_hotkey(self):
+        """
+        設定ファイルを再読み込みし、ショートカットキーが変わっている場合のみホットキーを再登録する。
+        """
+        import lib.settings as settings
+
+        notifier.log("ホットキーの再読み込み要求を受信しました。")
+        # 1. 他の設定項目の変更もメインプロセスへ反映させるため、キーの変更有無に関わらず設定ファイルは再読み込みする
+        settings.load()
+        new_shortcut = settings.get("capture.triggerShortcut")
+
+        # 2. 登録中のキーと同じ組み合わせであれば、解除・再登録と変更通知を行わない
+        # 表記揺れ（例: "print screen" と "print_screen"）を同一とみなすため、文字列ではなく解析結果で比較する
+        # 前回の登録に失敗している場合は、競合が解消されている可能性があるため再登録を試みる
+        if self._is_hotkey_registered and self._parse_shortcut_string(new_shortcut) == self._registered_key_combination:
+            notifier.log("ショートカットキーに変更がないため、再登録を省略しました。")
+            return
+
+        # 3. 変更があれば旧キーを解除して新キーを登録
+        self._unregister_hotkey()
+        self._register_hotkey(new_shortcut)
 
     def start(self):
         """

@@ -13,6 +13,7 @@ source_directory_path = os.path.join(project_root_directory_path, "src")
 sys.path.append(source_directory_path)
 
 import lib.constants as constants
+import lib.utils as utils
 import lib.version as version
 
 
@@ -111,7 +112,8 @@ def build_app():
         "--clean",  # ビルド前にPyInstallerのキャッシュをクリア
         "--noconsole",
         "--onefile",
-        "--icon=assets/icon.ico",
+        # exe本体のアイコンも、ビルド対象のバージョン（正式版 / beta版）に合わせて切り替える
+        f"--icon=assets/{utils.get_icon_filename(build_version)}",
         # assetsフォルダ内のすべてのファイルをバンドル対象にする (Windows環境を想定してセミコロン区切り)
         "--add-data=assets;assets",
         "--paths=src",  # src フォルダを明示的に探索パスに追加

@@ -64,8 +64,11 @@ def _ensure_start_menu_shortcut():
         programs_directory = shell.SHGetFolderPath(0, shellcon.CSIDL_PROGRAMS, None, 0)
         shortcut_path = os.path.join(programs_directory, f"{constants.APP_NAME}.lnk")
 
-        # 起動対象（exeまたはpythonスクリプト）と引数を設定
-        if getattr(sys, "frozen", False):
+        # 起動対象（exeまたはpythonスクリプト）・引数・アイコンを設定
+        # exe はアイコン未指定でも埋め込みアイコンが使われるため、開発時のみアイコンを指定する
+        # （assets のアイコンは exe 終了時に削除される一時フォルダ(_MEIPASS)にあり、ショートカットからは参照できない）
+        icon_path = None
+        if utils.is_executable():
             target_path = sys.executable
             arguments = ""
         else:
@@ -76,8 +79,7 @@ def _ensure_start_menu_shortcut():
                 target_path = pythonw_candidate
             main_script = utils.get_app_path(os.path.join("src", "main.pyw"))
             arguments = f'"{main_script}"'
-
-        icon_path = utils.get_asset_path("icon.ico", "icon_dev.ico")
+            icon_path = utils.get_app_icon_path()
 
         # COMライブラリを初期化
         pythoncom.CoInitialize()
@@ -88,7 +90,8 @@ def _ensure_start_menu_shortcut():
             if arguments:
                 shell_link.SetArguments(arguments)
             shell_link.SetWorkingDirectory(utils.get_app_path())
-            shell_link.SetIconLocation(icon_path, 0)
+            if icon_path:
+                shell_link.SetIconLocation(icon_path, 0)
             shell_link.SetDescription(constants.APP_NAME)
 
             # ファイルに保存

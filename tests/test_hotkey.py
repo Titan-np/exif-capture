@@ -1,7 +1,11 @@
 """
 lib.hotkey モジュールの単体テスト
-ショートカットキー文字列の構文解析および妥当性判定ロジックを検証する
+ショートカットキー文字列の構文解析、妥当性判定、設定変更時の再登録要否判定を検証する
 """
+
+from unittest.mock import MagicMock
+
+import pytest
 
 import lib.hotkey as hotkey
 
@@ -128,3 +132,58 @@ class TestIsValidShortcut:
         ]
         for invalid_shortcut in invalid_shortcut_list:
             assert hotkey.Manager.is_valid_shortcut(invalid_shortcut) is False
+
+
+class TestReloadHotkey:
+    """
+    設定変更時のホットキー再登録要否判定（_reload_hotkey）に関するテストクラス
+    """
+
+    @pytest.fixture
+    def manager_with_registered_key(self, monkeypatch):
+        """
+        「shift+print screen」が登録済みの状態の Manager を生成し、OSへの登録・解除をモック化する fixture
+
+        Args:
+            monkeypatch (pytest.MonkeyPatch): pytest のモンキーパッチ用オブジェクト
+
+        Returns:
+            hotkey.Manager: 登録・解除処理がモックに差し替えられた Manager
+        """
+        monkeypatch.setattr("lib.settings.load", MagicMock())
+
+        manager = hotkey.Manager(callback_function=None)
+        manager._is_hotkey_registered = True
+        manager._registered_key_combination = hotkey.Manager._parse_shortcut_string("shift+print screen")
+
+        # 実際の RegisterHotKey / UnregisterHotKey を呼ばないようモックに差し替え
+        manager._register_hotkey = MagicMock()
+        manager._unregister_hotkey = MagicMock()
+        return manager
+
+    def test_skips_reregistration_when_shortcut_unchanged(self, monkeypatch, manager_with_registered_key):
+        """登録中と同じ組み合わせ（表記揺れを含む）であれば、解除・再登録を行わないことを検証する"""
+        monkeypatch.setattr("lib.settings.get", lambda key: "shift+print_screen")
+
+        manager_with_registered_key._reload_hotkey()
+
+        manager_with_registered_key._unregister_hotkey.assert_not_called()
+        manager_with_registered_key._register_hotkey.assert_not_called()
+
+    def test_reregisters_when_shortcut_changed(self, monkeypatch, manager_with_registered_key):
+        """異なる組み合わせに変更された場合、旧キーを解除して新キーを登録することを検証する"""
+        monkeypatch.setattr("lib.settings.get", lambda key: "ctrl+shift+s")
+
+        manager_with_registered_key._reload_hotkey()
+
+        manager_with_registered_key._unregister_hotkey.assert_called_once()
+        manager_with_registered_key._register_hotkey.assert_called_once_with("ctrl+shift+s")
+
+    def test_reregisters_when_previous_registration_failed(self, monkeypatch, manager_with_registered_key):
+        """前回の登録に失敗している場合、同じ組み合わせでも再登録を試みることを検証する"""
+        monkeypatch.setattr("lib.settings.get", lambda key: "shift+print screen")
+        manager_with_registered_key._is_hotkey_registered = False
+
+        manager_with_registered_key._reload_hotkey()
+
+        manager_with_registered_key._register_hotkey.assert_called_once_with("shift+print screen")

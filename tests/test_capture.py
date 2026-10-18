@@ -1,9 +1,10 @@
 """
 capture モジュールの単体テスト
-日時フォーマットクラス、保存先パス生成ロジック、EXIFメタデータ生成ロジックを検証する
+日時フォーマットクラス、保存先パス生成ロジック、EXIFメタデータ生成ロジック、多重実行防止、通知音の音量変換を検証する
 """
 
 import os
+from unittest.mock import MagicMock
 
 from PIL import Image
 
@@ -126,3 +127,52 @@ class TestGenerateExifMetadata:
         exif_ifd = exif_metadata.get_ifd(34665)
         assert 36867 not in exif_ifd
         assert 36868 not in exif_ifd
+
+
+class TestCaptureLock:
+    """
+    撮影処理の多重実行防止（_capture_lock）に関するテストクラス
+    """
+
+    def test_skips_capture_while_running(self, monkeypatch, mock_notifier_actions):
+        """撮影処理の実行中にキー入力があった場合、撮影せずにスキップのログのみ出力されることを検証する"""
+        mock_settings_load = MagicMock()
+        monkeypatch.setattr("lib.settings.load", mock_settings_load)
+
+        # 撮影処理が実行中の状態を再現するため、ロックを先に取得しておく
+        capture._capture_lock.acquire()
+        try:
+            capture.capture_screenshot()
+        finally:
+            capture._capture_lock.release()
+
+        # 撮影処理の最初の手順（設定の読み込み）に進んでいないことを確認
+        mock_settings_load.assert_not_called()
+        mock_notifier_actions["log"].assert_called_once_with("撮影処理が実行中のため、キー入力をスキップしました。")
+
+
+class TestPlayCaptureSound:
+    """
+    撮影時の通知音の再生（play_capture_sound）に関するテストクラス
+    """
+
+    def test_does_not_play_when_volume_is_zero(self, monkeypatch):
+        """音量0%の場合、MCIコマンドを一切送信しないことを検証する"""
+        mock_mci_send = MagicMock()
+        monkeypatch.setattr(capture.ctypes.windll.winmm, "mciSendStringW", mock_mci_send)
+
+        capture.play_capture_sound(0)
+
+        mock_mci_send.assert_not_called()
+
+    def test_plays_with_scaled_volume(self, monkeypatch):
+        """音量0〜100%がMCIの0〜1000にスケール変換されて再生されることを検証する"""
+        mock_mci_send = MagicMock()
+        monkeypatch.setattr(capture.ctypes.windll.winmm, "mciSendStringW", mock_mci_send)
+
+        capture.play_capture_sound(50)
+
+        # 送信されたMCIコマンド文字列（第1引数）を抽出して確認
+        sent_commands = [call_arguments.args[0] for call_arguments in mock_mci_send.call_args_list]
+        assert "setaudio capture_sound volume to 500" in sent_commands
+        assert sent_commands[-1] == "play capture_sound"
