@@ -11,93 +11,65 @@ import lib.notifier as notifier
 import lib.paths as paths
 import lib.startup as startup
 import lib.updater as updater
-import lib.utils as utils
 import lib.version as version
+import lib.windows_shell as windows_shell
 import settings_window
 
-# ホットキー管理者インスタンス
-_hotkey_manager = None
-
-# 通知領域アイコンインスタンス
-_tray_icon = None
-
-# 初回起動フラグ（起動時通知と設定変更時通知の出し分けに使用）
-_is_initial_launch = True
-
-
-def _create_tray_icon_image():
-    """
-    通知領域に表示するためのアイコン画像を読み込む
-
-    Returns:
-        PIL.Image.Image: 生成されたアイコン画像
-    """
-    # 実行形態とバージョンに対応するアイコンのパスを取得
-    icon_path = paths.get_app_icon_path()
-
-    try:
-        # アイコン画像を読み込む
-        return Image.open(icon_path)
-    except Exception as exception:
-        # 読み込みに失敗した場合はダミー画像として水色の四角を返す
-        notifier.log(f"アイコン画像の読み込みに失敗しました。\n{exception}")
-        icon_image = Image.new("RGB", (64, 64), color=(0, 128, 255))
-        return icon_image
-
-
-def _watch_update_event():
-    """
-    設定画面からの更新通知イベント（settings_update_event）を待機し、
-    ホットキーマネージャーに再読み込みを要求する監視ループ
-    """
-    while True:
-        # 設定変更イベントが発火するまで待機
-        settings_window.settings_update_event.wait()
-        settings_window.settings_update_event.clear()
-
-        # 設定変更に伴いホットキーを再登録
-        if _hotkey_manager is not None:
-            _hotkey_manager.reload()
-
-
-def _close_application(tray_icon_instance, menu_item_instance):
-    """
-    通知領域への常駐とキーボード監視を終了する
-
-    Args:
-        tray_icon_instance (pystray.Icon): 制御対象のトレイアイコンオブジェクト
-        menu_item_instance (pystray.MenuItem): クリックされたメニュー項目オブジェクト
-    """
-    # ホットキー監視を停止
-    global _hotkey_manager
-    if _hotkey_manager is not None:
-        _hotkey_manager.stop()
-
-    # 通知領域からアイコンを削除し、アプリケーションの実行を終了する
-    # settings.load() # 終了処理時は確実に終了させるため、設定ファイルの再読み込みは行わずメモリ上の設定を用いて通知する
-    notifier.notify("終了します。", category=notifier.NotificationCategory.APP_EVENT)
-    tray_icon_instance.stop()
+# 起動後、アップデートチェックを行うまでの待機秒数（起動通知との重なりや、PC起動直後のネットワーク未接続を避けるため）
+STARTUP_CHECK_DELAY_SECONDS = 15
 
 
 def _launch_application():
     """
     通知領域への常駐とキーボード監視を開始する
     """
-    global _hotkey_manager, _tray_icon
+    # 初回起動フラグ（起動時通知と設定変更時通知の出し分けに使用）
+    is_initial_launch = True
 
-    # 起動時の最初のログ出力より前に、肥大化したログファイルを旧世代へ切り替える
-    notifier.rotate_log_file()
+    def _create_tray_icon_image():
+        """
+        通知領域に表示するためのアイコン画像を読み込む
 
-    # 通知領域に常駐させるアイコンと右クリックメニューを設定する
-    tray_menu = pystray.Menu(
-        pystray.MenuItem("設定を開く", settings_window.open_settings_window, default=True),
-        pystray.MenuItem("保存先フォルダを開く", utils.open_save_directory),
-        pystray.MenuItem("ログファイルを開く", utils.open_log_file),
-        pystray.MenuItem("終了", _close_application),
-    )
-    _tray_icon = pystray.Icon(name=constants.APP_NAME, icon=_create_tray_icon_image(), title=constants.APP_NAME, menu=tray_menu)
+        Returns:
+            PIL.Image.Image: 生成されたアイコン画像
+        """
+        try:
+            # 実行形態とバージョンに対応するアイコン画像を読み込む
+            return Image.open(paths.get_icon_path(version.APP_VERSION, is_development=not paths.is_executable()))
+        except Exception as exception:
+            # 読み込みに失敗した場合はダミー画像として水色の四角を返す
+            notifier.log(f"アイコン画像の読み込みに失敗しました。\n{exception}")
+            return Image.new("RGB", (64, 64), color=(0, 128, 255))
 
-    # ホットキー登録成功・失敗時に呼び出される関数を定義
+    def _close_application(tray_icon_instance, menu_item_instance):
+        """
+        通知領域への常駐とキーボード監視を終了する（トレイメニュー「終了」のコールバック）
+
+        Args:
+            tray_icon_instance (pystray.Icon): 制御対象のトレイアイコンオブジェクト
+            menu_item_instance (pystray.MenuItem): クリックされたメニュー項目オブジェクト
+        """
+        # 1. ホットキー監視を停止
+        hotkey_manager.stop()
+
+        # 2. 通知領域からアイコンを削除し、アプリケーションの実行を終了する
+        # 終了処理時は確実に終了させるため、設定ファイルの再読み込みは行わずメモリ上の設定を用いて通知する
+        notifier.notify(category=notifier.NotificationCategory.APP_EVENT, title="終了します。")
+        tray_icon_instance.stop()
+
+    def _watch_update_event():
+        """
+        設定画面からの更新通知イベント（settings_update_event）を待機し、
+        ホットキーマネージャーに再読み込みを要求する監視ループ
+        """
+        while True:
+            # 設定変更イベントが発火するまで待機
+            settings_window.settings_update_event.wait()
+            settings_window.settings_update_event.clear()
+
+            # 設定変更に伴いホットキーを再登録
+            hotkey_manager.reload()
+
     def _handle_hotkey_success(shortcut_key):
         """
         ホットキー登録成功時のコールバック処理
@@ -106,26 +78,24 @@ def _launch_application():
         Args:
             shortcut_key (str): 登録に成功したショートカットキー文字列
         """
-        global _is_initial_launch, _tray_icon
+        nonlocal is_initial_launch
 
-        # 「起動しました」または「ショートカットキーを変更しました」の通知を表示
-        title = None
-        if _is_initial_launch:
+        # 1. 「起動しました」または「ショートカットキーを変更しました」の通知を表示
+        if is_initial_launch:
             title = f"起動しました。({version.APP_VERSION})"
         else:
-            title = f"ショートカットキーを変更しました。"
+            title = "ショートカットキーを変更しました。"
         notifier.notify(
-            title,
-            f"ショートカットキー ({shortcut_key}) を押すとスクリーンショットを撮影します。",
             category=notifier.NotificationCategory.APP_EVENT,
+            title=title,
+            message=f"ショートカットキー ({shortcut_key}) を押すとスクリーンショットを撮影します。",
         )
 
-        # ホットキー登録が完了した段階で、初回起動フラグを解除
-        _is_initial_launch = False
+        # 2. ホットキー登録が完了した段階で、初回起動フラグを解除
+        is_initial_launch = False
 
-        # トレイアイコンのツールチップを通常表示に復帰
-        if _tray_icon is not None:
-            _tray_icon.title = constants.APP_NAME
+        # 3. トレイアイコンのツールチップを通常表示に復帰
+        tray_icon.title = constants.APP_NAME
 
     def _handle_hotkey_failure(shortcut_key, error_code):
         """
@@ -136,45 +106,60 @@ def _launch_application():
             shortcut_key (str): 登録に失敗したショートカットキー文字列
             error_code (int): Windows APIのエラーコード
         """
-        global _is_initial_launch, _tray_icon
+        nonlocal is_initial_launch
 
-        # 他アプリとの競合等でホットキーが使えない旨を通知し、設定変更を案内する
+        # 1. 他アプリとの競合等でホットキーが使えない旨を通知し、設定変更を案内する
         notifier.notify(
+            category=notifier.NotificationCategory.ERROR,
             title="ショートカットキーの登録に失敗しました",
             message=f"'{shortcut_key}' は他のアプリと競合している可能性があります。設定画面から別のキーに変更してください。",
             log_message=f"ショートカットキーの登録に失敗しました: {shortcut_key} (エラーコード: {error_code})",
             buttons=[notifier.NotificationButton.OPEN_SETTINGS, notifier.NotificationButton.OPEN_LOG],
-            category=notifier.NotificationCategory.ERROR,
         )
 
-        # ホットキー登録が完了した段階で、初回起動フラグを解除
-        _is_initial_launch = False
+        # 2. ホットキー登録が完了した段階で、初回起動フラグを解除
+        is_initial_launch = False
 
-        # トレイアイコンのツールチップに未登録状態を表示し、視覚的に警告する
-        if _tray_icon is not None:
-            _tray_icon.title = f"{constants.APP_NAME} (ホットキー未登録)"
+        # 3. トレイアイコンのツールチップに未登録状態を表示し、視覚的に警告する
+        tray_icon.title = f"{constants.APP_NAME} (ホットキー未登録)"
 
-    # ホットキー管理クラスをインスタンス化して監視を開始
+    # 1. 起動時の最初のログ出力より前に、肥大化したログファイルを旧世代へ切り替える
+    notifier.rotate_log_file()
+
+    # 2. 最初の通知（起動通知）より前に、通知にアプリアイコンを表示するためのスタートメニューのショートカットを作成・更新する
+    notifier.ensure_start_menu_shortcut()
+
+    # 3. 通知領域に常駐させるアイコンと右クリックメニューを設定する
+    # ホットキー登録の成否コールバックでツールチップを更新するため、ホットキー監視の開始より前に作成する
+    tray_menu = pystray.Menu(
+        pystray.MenuItem("設定を開く", settings_window.open_settings_window, default=True),
+        pystray.MenuItem("保存先フォルダを開く", windows_shell.open_save_directory),
+        pystray.MenuItem("ログファイルを開く", windows_shell.open_log_file),
+        pystray.MenuItem("終了", _close_application),
+    )
+    tray_icon = pystray.Icon(name=constants.APP_NAME, icon=_create_tray_icon_image(), title=constants.APP_NAME, menu=tray_menu)
+
+    # 4. ホットキー管理クラスをインスタンス化して監視を開始
     # 登録成否コールバックを渡し、状態に応じた通知とトレイアイコン更新を行う
-    _hotkey_manager = hotkey.Manager(
+    hotkey_manager = hotkey.Manager(
         callback_function=capture.capture_screenshot,
         on_registration_failure=_handle_hotkey_failure,
         on_registration_success=_handle_hotkey_success,
     )
-    _hotkey_manager.start()
+    hotkey_manager.start()
 
-    # 設定変更通知を監視するスレッドを起動
-    update_watcher_thread = threading.Thread(target=_watch_update_event, daemon=True)
-    update_watcher_thread.start()
+    # 5. 設定変更通知を監視するスレッドを起動
+    threading.Thread(target=_watch_update_event, daemon=True).start()
 
-    # 新しいバージョンが公開されていないかを、起動から一定時間後に確認する
-    updater.start_startup_check()
+    # 6. 新しいバージョンが公開されていないかを、起動から一定時間後に確認して通知する
+    # 起動通知との重なりや、PC起動直後のネットワーク未接続を避けるため、すぐには確認しない
+    updater.notify_update(delay_seconds=STARTUP_CHECK_DELAY_SECONDS)
 
-    # スタートアップに登録済みの場合、exeの移動に追従するようショートカットのリンク先を現在のexeに更新する
+    # 7. スタートアップに登録済みの場合、exeの移動に追従するようショートカットのリンク先を現在のexeに更新する
     startup.refresh_shortcut()
 
-    # 通知領域での常駐を開始してメインループを起動する（起動通知は登録成否コールバック内で行う）
-    _tray_icon.run()
+    # 8. 通知領域での常駐を開始してメインループを起動する（起動通知は登録成否コールバック内で行う）
+    tray_icon.run()
 
 
 # ここから実行

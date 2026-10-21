@@ -11,19 +11,7 @@ from win11toast import toast_async
 
 import lib.constants as constants
 import lib.paths as paths
-import lib.utils as utils
-
-# ログファイルの保存先（アプリケーションフォルダからの相対パス）
-LOG_DIRECTORY_NAME = "logs"
-LOG_FILE_NAME = "app.log"
-OLD_LOG_FILE_NAME = "app.log.old"
-
-# ログファイル書き込み時のリトライ設定（マルチプロセス環境等でのファイル競合対策）
-LOG_WRITE_MAX_RETRY_COUNT = 3
-LOG_WRITE_RETRY_INTERVAL_SECONDS = 0.05
-
-# ログファイルの切り替え基準サイズ（超過時は起動時に旧世代へ退避し、最大でこの約2倍の容量に収める）
-LOG_FILE_MAX_BYTES = 1 * 1024 * 1024
+import lib.windows_shell as windows_shell
 
 
 # 通知アクションボタンの種別
@@ -47,32 +35,6 @@ class NotificationCategory(StrEnum):
     UPDATE = "update.checkMode"
 
 
-def _ensure_start_menu_shortcut():
-    """
-    トースト通知のヘッダー（app_idの左）にアプリアイコンを表示させるため、
-    スタートメニューに AUMID (System.AppUserModel.ID) 付きのショートカットを作成・更新する
-    """
-    if os.environ.get("EXIF_CAPTURE_TESTING") == "1":
-        return
-
-    try:
-        from win32com.shell import shell, shellcon
-
-        # 現在のプロセスに AUMID を明示的に設定する
-        try:
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(constants.APP_NAME)
-        except Exception:
-            pass
-
-        # スタートメニューのプログラムフォルダに、AUMID付きのショートカットを作成・更新する
-        programs_directory = shell.SHGetFolderPath(0, shellcon.CSIDL_PROGRAMS, None, 0)
-        shortcut_path = os.path.join(programs_directory, f"{constants.APP_NAME}.lnk")
-        utils.create_app_shortcut(shortcut_path, app_user_model_id=constants.APP_NAME)
-
-    except Exception as exception:
-        log(f"スタートメニューショートカットの登録・更新に失敗しました。\n{exception}")
-
-
 # COM のマルチスレッド環境をアプリ終了まで維持するための識別子（_keep_winrt_environment で取得し、解放しない）
 _apartment_usage_cookie = None
 
@@ -85,16 +47,146 @@ def _keep_winrt_environment():
     Windows 側の処理などがこの作業場所を一時的に使い終えると、作業場所ごと片付けられて部品も外されてしまう。
     通知ライブラリ（win11toast）は外されたことに気付かず次の通知で使おうとするため、アプリが強制終了してしまう。
     起動時に作業場所の利用を宣言しておき、アプリ終了まで片付けられないようにする。
+
+    常駐プロセスだけでなく、エラー通知を出しうる設定画面のプロセスでも必要になる。
+    また、ファイルや設定を変更しない処理のため、main.pyw から呼ぶ他の起動時処理と異なり、モジュール読み込み時に実行する。
     """
     global _apartment_usage_cookie
+
+    # 1. マルチスレッドアパートメントの利用を宣言する
     cookie = ctypes.c_void_p()
     result = ctypes.windll.combase.CoIncrementMTAUsage(ctypes.byref(cookie))
+    # 2. 宣言に失敗した場合はログに残して終了する
     if result < 0:
         # 維持できなかった環境では、以降で通知を出そうとした際に強制終了する可能性が残る
         # 撮影・保存には影響しないため、事象再現時の調査用にログ出力のみ行いアプリは続行させる
         log(f"通知用の実行環境の維持に失敗しました。(エラーコード: 0x{result & 0xFFFFFFFF:08X})")
         return
+
+    # 3. アプリ終了まで解放しないよう、識別子をモジュール変数に保持する
     _apartment_usage_cookie = cookie
+
+
+# ログファイルの保存先（アプリケーションフォルダからの相対パス）
+LOG_DIRECTORY_NAME = "logs"
+LOG_FILE_NAME = "app.log"
+
+
+def get_log_file_path():
+    """
+    ログファイルの絶対パスを取得する
+
+    Returns:
+        str: ログファイルの絶対パス
+    """
+    return paths.resolve_app_relative_path(os.path.join(LOG_DIRECTORY_NAME, LOG_FILE_NAME))
+
+
+# ログファイルの切り替え基準サイズ（超過時は起動時に旧世代へ退避し、最大でこの約2倍の容量に収める）
+# テストで小さな値に差し替えるため、関数内ではなくモジュール直下に置く
+LOG_FILE_MAX_BYTES = 1 * 1024 * 1024
+
+
+def rotate_log_file():
+    """
+    ログファイルが基準サイズを超えている場合に旧世代ファイルへ切り替える
+    書き込みごとの判定は別プロセスがファイルを開いている間にリネームが失敗しやすいため、アプリ起動時に1回だけ呼び出す
+    """
+    # 旧世代のログファイル名
+    OLD_LOG_FILE_NAME = "app.log.old"
+
+    log_file_path = get_log_file_path()
+    old_log_file_path = os.path.join(os.path.dirname(log_file_path), OLD_LOG_FILE_NAME)
+
+    # 1. ログファイルが存在しない、または基準サイズ以下なら切り替えない
+    if not os.path.exists(log_file_path) or os.path.getsize(log_file_path) <= LOG_FILE_MAX_BYTES:
+        return
+
+    # 2. 旧世代ファイルへ置き換える（os.replace は既存の旧世代を上書きするため、2世代のみ保持される）
+    try:
+        os.replace(log_file_path, old_log_file_path)
+    except OSError as exception:
+        # 切り替えに失敗しても追記は継続できるため、起動処理は止めない
+        log(f"ログファイルの切り替えに失敗しました。\n{exception}")
+        return
+
+    # 3. 新しいログファイルの先頭に切り替えた旨を記録
+    log(f"ログファイルが {LOG_FILE_MAX_BYTES // 1024}KB を超えたため、旧ログを {os.path.basename(old_log_file_path)} に退避しました。")
+
+
+def ensure_start_menu_shortcut():
+    """
+    トースト通知のヘッダー（app_idの左）にアプリアイコンを表示させるため、
+    スタートメニューに AUMID (System.AppUserModel.ID) 付きのショートカットを作成・更新する
+    設定画面のプロセスでは不要なため、モジュール読み込み時ではなく常駐プロセスの起動処理（main.pyw）から呼び出す
+    """
+    try:
+        from win32com.shell import shell, shellcon
+
+        # 1. 現在のプロセスに AUMID を明示的に設定する
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(constants.APP_NAME)
+        except Exception:
+            pass
+
+        # 2. スタートメニューのプログラムフォルダに、AUMID付きのショートカットを作成・更新する
+        programs_directory = shell.SHGetFolderPath(0, shellcon.CSIDL_PROGRAMS, None, 0)
+        shortcut_path = os.path.join(programs_directory, f"{constants.APP_NAME}.lnk")
+        windows_shell.create_app_shortcut(shortcut_path, app_user_model_id=constants.APP_NAME)
+
+    except Exception as exception:
+        log(f"スタートメニューショートカットの登録・更新に失敗しました。\n{exception}")
+
+
+def log(message: str):
+    """
+    コンソールおよびログファイルに日時付きでログを出力する
+    マルチプロセス等での競合によるファイルアクセスエラー時は短時間待機して再試行する
+
+    Args:
+        message (str): 出力するメッセージ
+    """
+    # ログファイル書き込み時のリトライ設定（マルチプロセス環境等でのファイル競合対策）
+    LOG_WRITE_MAX_RETRY_COUNT = 3
+    LOG_WRITE_RETRY_INTERVAL_SECONDS = 0.05
+
+    def _format(text):
+        """複数行テキストにタイムスタンプとインデントを付加する"""
+        # プレフィックスを作成 （1行目はタイムスタンプ・2行目以降は同幅のインデント）
+        timestamp = f"[{(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))}] "
+        indent = " " * len(timestamp)
+
+        # プレフィックスを付加して出力メッセージを作成
+        lines = text.split("\n")
+        formatted_lines = [timestamp + lines[0]] + [indent + line for line in lines[1:]]
+        return "\n".join(formatted_lines)
+
+    # 1. コンソール（標準出力）に出力
+    print(_format(message))
+
+    try:
+        # 2. ログファイルの保存先フォルダを作成
+        log_file_path = get_log_file_path()
+        os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
+
+        # 3. 書き込みの競合を防ぐためリトライしつつ書き込む
+        for attempt_count in range(1, LOG_WRITE_MAX_RETRY_COUNT + 1):
+            try:
+                # 既存のログファイルがあれば追記する
+                with open(log_file_path, "a", encoding="utf-8") as log_file:
+                    log_file.write(_format(message) + "\n")
+                # 正常に書き込めたらループを終了
+                break
+            except (PermissionError, OSError) as exception:
+                # 最終試行でも失敗した場合はエラーを出力
+                if attempt_count == LOG_WRITE_MAX_RETRY_COUNT:
+                    print(_format(f"ログファイルへの書き込みに失敗しました。\n{exception}"))
+                    break
+                # 他プロセスのファイル解放を待つため待機
+                time.sleep(LOG_WRITE_RETRY_INTERVAL_SECONDS)
+
+    except Exception as exception:
+        print(_format(f"ログファイルへの書き込み処理で予期せぬエラーが発生しました。\n{exception}"))
 
 
 # 通知処理専用のイベントループ（_send の初回呼び出し時に生成し、アプリ終了まで閉じない）
@@ -158,101 +250,27 @@ def _send(title, body=None, image=None, buttons=None, on_click=None):
     future.add_done_callback(_log_failure)
 
 
-def rotate_log_file():
-    """
-    ログファイルが基準サイズを超えている場合に旧世代ファイルへ切り替える
-    書き込みごとの判定は別プロセスがファイルを開いている間にリネームが失敗しやすいため、アプリ起動時に1回だけ呼び出す
-    """
-    log_file_path = paths.get_app_path(os.path.join(LOG_DIRECTORY_NAME, LOG_FILE_NAME))
-    old_log_file_path = paths.get_app_path(os.path.join(LOG_DIRECTORY_NAME, OLD_LOG_FILE_NAME))
-
-    # 1. ログファイルが存在しない、または基準サイズ以下なら切り替えない
-    if not os.path.exists(log_file_path) or os.path.getsize(log_file_path) <= LOG_FILE_MAX_BYTES:
-        return
-
-    # 2. 旧世代ファイルへ置き換える（os.replace は既存の旧世代を上書きするため、2世代のみ保持される）
-    try:
-        os.replace(log_file_path, old_log_file_path)
-    except OSError as exception:
-        # 切り替えに失敗しても追記は継続できるため、起動処理は止めない
-        log(f"ログファイルの切り替えに失敗しました。\n{exception}")
-        return
-
-    # 3. 新しいログファイルの先頭に切り替えた旨を記録
-    log(f"ログファイルが {LOG_FILE_MAX_BYTES // 1024}KB を超えたため、旧ログを {os.path.basename(old_log_file_path)} に退避しました。")
-
-
-def log(message: str):
-    """
-    コンソールおよびログファイルに日時付きでログを出力する
-    マルチプロセス等での競合によるファイルアクセスエラー時は短時間待機して再試行する
-
-    Args:
-        message (str): 出力するメッセージ
-    """
-
-    def _format(text):
-        """複数行テキストにタイムスタンプとインデントを付加する"""
-        # プレフィックスを作成 （1行目はタイムスタンプ・2行目以降は同幅のインデント）
-        timestamp = f"[{(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))}] "
-        indent = " " * len(timestamp)
-
-        # プレフィックスを付加して出力メッセージを作成
-        lines = text.split("\n")
-        formatted_lines = [timestamp + lines[0]] + [indent + line for line in lines[1:]]
-        return "\n".join(formatted_lines)
-
-    # コンソール（標準出力）に出力
-    print(_format(message))
-
-    try:
-        # ログファイルの保存先フォルダを作成
-        log_directory = paths.get_app_path(LOG_DIRECTORY_NAME)
-        if not os.path.exists(log_directory):
-            os.makedirs(log_directory, exist_ok=True)
-
-        log_file_path = os.path.join(log_directory, LOG_FILE_NAME)
-
-        # 書き込みの競合を防ぐためリトライしつつ書き込む
-        for attempt_count in range(1, LOG_WRITE_MAX_RETRY_COUNT + 1):
-            try:
-                # 既存のログファイルがあれば追記する
-                with open(log_file_path, "a", encoding="utf-8") as log_file:
-                    log_file.write(_format(message) + "\n")
-                # 正常に書き込めたらループを終了
-                break
-            except (PermissionError, OSError) as exception:
-                # 最終試行でも失敗した場合はエラーを出力
-                if attempt_count == LOG_WRITE_MAX_RETRY_COUNT:
-                    print(_format(f"ログファイルへの書き込みに失敗しました。\n{exception}"))
-                    break
-                # 他プロセスのファイル解放を待つため待機
-                time.sleep(LOG_WRITE_RETRY_INTERVAL_SECONDS)
-
-    except Exception as exception:
-        print(_format(f"ログファイルへの書き込み処理で予期せぬエラーが発生しました。\n{exception}"))
-
-
 def notify(
+    category: NotificationCategory,
     title: str,
     message: str = None,
     log_message: str = None,
     buttons: list = None,
     image_path: str = None,
-    *,
-    category: NotificationCategory,
+    release_page_url: str = None,
 ):
     """
     Windowsトースト通知とログ出力を同時に行う
     通知の種別に対応する設定がオフの場合は、ログ出力のみ行いトースト通知は表示しない
 
     Args:
+        category (NotificationCategory): 通知の種別。設定で制御できない通知を作らないよう、既定値を設けず必須とする
         title (str): 通知のタイトル
         message (str, optional): 通知本文（log_message未指定時はログ本文としても使用）
         log_message (str, optional): ログ専用のメッセージ。指定時はmessageの代わりにログファイルへ出力する
         buttons (list[NotificationButton], optional): 表示するボタンのリスト
         image_path (str, optional): キャプチャ画像などの絶対パス
-        category (NotificationCategory): 通知の種別。設定で制御できない通知を作らないよう、既定値を設けず必須とする
+        release_page_url (str, optional): 「リリースページを開く」ボタンで開くURL
     """
     # 1. ログを出力
     log_message = log_message if log_message is not None else message
@@ -271,59 +289,42 @@ def notify(
         return
 
     # 3. ボタンとクリックイベントを設定
-    toast_buttons = []
-    on_click = None
+    # NotificationButton に定義されたボタンのみを抽出
+    toast_buttons = [button for button in buttons or [] if button in NotificationButton]
 
-    if buttons:
-        # NotificationButton に定義されたボタンのみを抽出
-        toast_buttons = [button for button in buttons if button in NotificationButton]
+    def _handle_click(click_event_arguments=None):
+        # win11toastの仕様で、押したボタンは「http:ボタン文言」で引数に渡される（通知本体のクリックでは空文字）
+        clicked_action = (click_event_arguments or {}).get("arguments", "").removeprefix("http:")
 
-        def _handle_click(click_event_arguments=None):
-            # win11toastの仕様で、押したボタンは「http:ボタン文言」で引数に渡される
-            clicked_action = click_event_arguments.get("arguments", "").removeprefix("http:")
+        try:
+            # 「キャプチャした画像を開く」または通知本体クリック（画像パスがある場合）
+            if clicked_action == NotificationButton.OPEN_IMAGE or (clicked_action == "" and image_path):
+                if image_path and os.path.exists(image_path):
+                    windows_shell.safe_open_path(image_path, resource_name="キャプチャした画像")
+            # 「保存先フォルダを開く」
+            elif clicked_action == NotificationButton.OPEN_FOLDER:
+                windows_shell.open_save_directory()
+            # 「ログファイルを開く」
+            elif clicked_action == NotificationButton.OPEN_LOG:
+                windows_shell.open_log_file()
+            # 「設定画面を開く」
+            elif clicked_action == NotificationButton.OPEN_SETTINGS:
+                from settings_window import open_settings_window
 
-            try:
-                # 「キャプチャした画像を開く」または通知本体クリック（画像パスがある場合）
-                if clicked_action == NotificationButton.OPEN_IMAGE or (clicked_action == "" and image_path):
-                    if image_path and os.path.exists(image_path):
-                        utils.safe_open_path(image_path, resource_name="キャプチャした画像")
-                # 「保存先フォルダを開く」
-                elif clicked_action == NotificationButton.OPEN_FOLDER:
-                    utils.open_save_directory()
-                # 「ログファイルを開く」
-                elif clicked_action == NotificationButton.OPEN_LOG:
-                    utils.open_log_file()
-                # 「設定画面を開く」
-                elif clicked_action == NotificationButton.OPEN_SETTINGS:
-                    from settings_window import open_settings_window
+                open_settings_window()
+            # 「リリースページを開く」
+            elif clicked_action == NotificationButton.OPEN_RELEASE_PAGE:
+                webbrowser.open(release_page_url)
+        except OSError as exception:
+            log(f"通知のクリック時の処理に失敗しました。\n{exception}")
 
-                    open_settings_window()
-                # 「リリースページを開く」
-                elif clicked_action == NotificationButton.OPEN_RELEASE_PAGE:
-                    webbrowser.open(constants.RELEASES_PAGE_URL)
-            except OSError as exception:
-                log(f"通知ボタンのアクション実行に失敗しました。\n{exception}")
-
-        on_click = _handle_click
-
-    elif image_path:
-        # ボタン指定がない場合でも、画像があれば通知クリックで画像を開く
-        def _handle_click(click_event_arguments=None):
-            try:
-                if os.path.exists(image_path):
-                    utils.safe_open_path(image_path, resource_name="キャプチャした画像")
-            except OSError as exception:
-                log(f"画像を開けませんでした。\n{exception}")
-
-        on_click = _handle_click
-
-    # 4. Windows通知を送信
+    # 4. Windows通知を送信（ボタンも画像も無い通知は、クリックしても何もしないためクリック処理を渡さない）
     _send(
         title=title,
         body=message,
         image=image_path,
-        buttons=toast_buttons if toast_buttons else None,
-        on_click=on_click,
+        buttons=toast_buttons or None,
+        on_click=_handle_click if toast_buttons or image_path else None,
     )
 
 
@@ -336,16 +337,13 @@ def error(title, log_message: str):
         log_message (str): エラーメッセージ（ログにのみ出力）
     """
     notify(
+        category=NotificationCategory.ERROR,
         title=title,
         message="エラーが発生しました。詳細はログファイルを参照してください。",
         log_message=log_message,
         buttons=[NotificationButton.OPEN_LOG],
-        category=NotificationCategory.ERROR,
     )
 
-
-# モジュール読み込み時にスタートメニューショートカットを確認・作成する
-_ensure_start_menu_shortcut()
 
 # 最初の通知（起動通知）より前に、通知用の実行環境を維持しておく
 _keep_winrt_environment()

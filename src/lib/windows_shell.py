@@ -9,6 +9,7 @@ import sys
 
 import lib.constants as constants
 import lib.paths as paths
+import lib.version as version
 
 
 def create_app_shortcut(shortcut_path: str, app_user_model_id: str | None = None):
@@ -38,9 +39,9 @@ def create_app_shortcut(shortcut_path: str, app_user_model_id: str | None = None
         pythonw_candidate = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
         if os.path.exists(pythonw_candidate):
             target_path = pythonw_candidate
-        main_script = paths.get_app_path(os.path.join("src", "main.pyw"))
+        main_script = paths.resolve_app_relative_path(os.path.join("src", "main.pyw"))
         arguments = f'"{main_script}"'
-        icon_path = paths.get_app_icon_path()
+        icon_path = paths.get_icon_path(version.APP_VERSION, is_development=True)
 
     # 2. COMライブラリを初期化
     pythoncom.CoInitialize()
@@ -50,7 +51,7 @@ def create_app_shortcut(shortcut_path: str, app_user_model_id: str | None = None
         shell_link.SetPath(target_path)
         if arguments:
             shell_link.SetArguments(arguments)
-        shell_link.SetWorkingDirectory(paths.get_app_path())
+        shell_link.SetWorkingDirectory(paths.resolve_app_relative_path())
         if icon_path:
             shell_link.SetIconLocation(icon_path, 0)
         shell_link.SetDescription(constants.APP_NAME)
@@ -71,28 +72,55 @@ def create_app_shortcut(shortcut_path: str, app_user_model_id: str | None = None
         pythoncom.CoUninitialize()
 
 
-def get_windows_accent_colors(fallback_color: str = "#228B22"):
+def get_shortcut_target_path(shortcut_path: str) -> str:
+    """
+    ショートカット（.lnk）のリンク先パスを取得する
+
+    失敗時の扱いは呼び出し元に任せ、例外はそのまま送出する。
+
+    Args:
+        shortcut_path (str): 読み取るショートカットの絶対パス
+
+    Returns:
+        str: リンク先の絶対パス
+    """
+    import pythoncom
+    from win32com.shell import shell
+
+    # 1. COMライブラリを初期化
+    pythoncom.CoInitialize()
+    try:
+        # 2. ショートカット（IShellLink）をファイルから読み込み、リンク先パスを取り出す
+        shell_link = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None, pythoncom.CLSCTX_INPROC_SERVER, shell.IID_IShellLink)
+        persist_file = shell_link.QueryInterface(pythoncom.IID_IPersistFile)
+        persist_file.Load(shortcut_path)
+        target_path, _ = shell_link.GetPath(0)
+        return target_path
+    finally:
+        pythoncom.CoUninitialize()
+
+
+def get_windows_accent_colors(fallback_color: str):
     """
     Windowsの個人用設定からアクセントカラーとホバー用のカラーコードを取得する
 
     Args:
-        fallback_color (str): 取得できなかった場合のフォールバックカラーコード (HEX)
+        fallback_color (str): 取得できなかった場合に使うカラーコード (HEX。例: "#228B22")
 
     Returns:
         tuple[str, str]: (アクセントカラーのHEXコード, ホバー用カラーのHEXコード)
     """
-    # ホバー時の明度を落と使い倍率
+    # ホバー時の明度を落とす倍率
     _HOVER_DIM_RATE = 0.8
 
     try:
-        # レジストリからWindowsのアクセントカラー(0xAABBGGRR)を取得
+        # 1. レジストリからWindowsのアクセントカラー(0xAABBGGRR)を取得（with で読み取り失敗時もキーを閉じる）
         import winreg
 
-        registry_key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\DWM")
-        accent_color_dword, _ = winreg.QueryValueEx(registry_key, "AccentColor")
-        winreg.CloseKey(registry_key)
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\DWM") as registry_key:
+            accent_color_dword, _ = winreg.QueryValueEx(registry_key, "AccentColor")
 
-        # ABGR形式(0xAABBGGRR)の数値からR,G,Bの値を取得
+        # 2. ABGR形式(0xAABBGGRR)の数値からR,G,Bの値を取得
         red = accent_color_dword & 0xFF
         green = (accent_color_dword >> 8) & 0xFF
         blue = (accent_color_dword >> 16) & 0xFF
@@ -100,15 +128,15 @@ def get_windows_accent_colors(fallback_color: str = "#228B22"):
         import lib.notifier as notifier
 
         notifier.log(f"Windowsのアクセントカラーの取得に失敗しました。デフォルトカラーを使用します。\n{exception}")
-        # 取得失敗時はフォールバック文字列からRGBを抽出
+        # 取得失敗時は代替色のカラーコードからRGBを抽出
         red = int(fallback_color[1:3], 16)
         green = int(fallback_color[3:5], 16)
         blue = int(fallback_color[5:7], 16)
 
-    # HEX文字列に変換
+    # 3. HEX文字列に変換
     accent_color = f"#{red:02X}{green:02X}{blue:02X}"
 
-    # ホバー時のカラーを計算（明度を落とした色）
+    # 4. ホバー時のカラーを計算（明度を落とした色）
     hover_red = int(red * _HOVER_DIM_RATE)
     hover_green = int(green * _HOVER_DIM_RATE)
     hover_blue = int(blue * _HOVER_DIM_RATE)
@@ -131,7 +159,7 @@ def safe_open_path(target_path: str, resource_name: str = "対象") -> bool:
     """
     import lib.notifier as notifier
 
-    # パスが空または存在しない場合はユーザーに通知して終了
+    # 1. パスが空または存在しない場合はユーザーに通知して終了
     if not target_path or not os.path.exists(target_path):
         notifier.error(
             f"{resource_name}を開けませんでした。",
@@ -140,7 +168,7 @@ def safe_open_path(target_path: str, resource_name: str = "対象") -> bool:
         return False
 
     try:
-        # OSの既定アプリケーションでファイルまたはディレクトリを起動
+        # 2. OSの既定アプリケーションでファイルまたはディレクトリを起動（失敗時は原因に応じて通知）
         os.startfile(target_path)
         return True
 
@@ -175,14 +203,12 @@ def open_log_file(icon=None, item=None) -> bool:
     """
     import lib.notifier as notifier
 
-    # ログファイルの絶対パスを取得
-    log_file_path = paths.get_app_path(os.path.join(notifier.LOG_DIRECTORY_NAME, notifier.LOG_FILE_NAME))
+    # 1. ログファイルの絶対パスを取得
+    log_file_path = notifier.get_log_file_path()
 
     try:
-        # ログフォルダおよびログファイルが存在しない場合は自動作成
-        log_directory = os.path.dirname(log_file_path)
-        if not os.path.exists(log_directory):
-            os.makedirs(log_directory, exist_ok=True)
+        # 2. ログフォルダおよびログファイルが存在しない場合は自動作成
+        os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
 
         if not os.path.exists(log_file_path):
             with open(log_file_path, "w", encoding="utf-8"):
@@ -192,7 +218,7 @@ def open_log_file(icon=None, item=None) -> bool:
         notifier.error("ログファイルを作成できませんでした。", str(exception))
         return False
 
-    # 規定のエディタでログファイルを開く
+    # 3. 既定のエディタでログファイルを開く
     return safe_open_path(log_file_path, resource_name="ログファイル")
 
 
@@ -207,19 +233,18 @@ def ensure_save_directory() -> str | None:
     import lib.notifier as notifier
     import lib.settings as settings
 
-    # 保存先フォルダを設定から取得
+    # 1. 保存先フォルダを設定から取得し、チルダや環境変数を展開する
     configured_directory = settings.get("save.directory")
     target_directory = paths.expand_path(configured_directory) if configured_directory else ""
 
+    # 2. パスが未設定または無効な場合はログに記録して終了
     if not target_directory:
-        # パスが未設定または無効な場合はログに記録
         notifier.log("保存先フォルダのパスが指定されていません。")
         return None
 
     try:
-        # 保存先フォルダが存在しない場合は作成
-        if not os.path.exists(target_directory):
-            os.makedirs(target_directory, exist_ok=True)
+        # 3. 保存先フォルダが存在しない場合は作成（exist_ok により既存の場合は何もしない）
+        os.makedirs(target_directory, exist_ok=True)
     except OSError as exception:
         # フォルダ作成失敗時のエラーログ出力
         notifier.log(f"保存先フォルダを作成できませんでした。\n{exception}")
@@ -240,19 +265,18 @@ def open_save_directory(icon=None, item=None) -> bool:
     Returns:
         bool: フォルダを開く処理に成功した場合はTrue、失敗した場合はFalse
     """
-    # 保存先フォルダの確認・作成
+    # 1. 保存先フォルダの確認・作成（失敗時は設定やログの確認を促す通知を表示）
     target_directory = ensure_save_directory()
     if not target_directory:
-        # フォルダ準備失敗時は設定やログ確認を促す通知を表示
         import lib.notifier as notifier
 
         notifier.notify(
+            category=notifier.NotificationCategory.ERROR,
             title="保存先フォルダを開けませんでした。",
             message="保存先フォルダを準備できませんでした。詳細はログファイルを参照してください。",
             buttons=[notifier.NotificationButton.OPEN_LOG, notifier.NotificationButton.OPEN_SETTINGS],
-            category=notifier.NotificationCategory.ERROR,
         )
         return False
 
-    # エクスプローラーでフォルダを開く
+    # 2. エクスプローラーでフォルダを開く
     return safe_open_path(target_directory, resource_name="保存先フォルダ")

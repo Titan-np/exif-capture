@@ -1,9 +1,10 @@
 """
-アプリケーションのバージョン情報を動的に解決するモジュール
+アプリケーションのバージョン情報を動的に解決し、タグ名の形式を解析するモジュール
 ビルド成果物（exe）実行時とローカル開発環境実行時で適切なバージョン文字列を取得する
 """
 
 import os
+import re
 import subprocess
 
 import lib.paths as paths
@@ -43,9 +44,10 @@ def get_app_version() -> str:
     # 3. 開発環境での直接実行時は、ローカルGitリポジトリから直近のタグ名を取得
     try:
         # リポジトリルートを取得
+        repository_root_path = paths.resolve_app_relative_path()
 
-        repository_root_path = paths.get_app_path()
-
+        # 引数をリストで渡すため cmd.exe は経由せず、git を直接起動する
+        # コンソールの無い pythonw 実行時に git のコンソールウィンドウが一瞬表示されないよう、CREATE_NO_WINDOW を指定する
         git_command = ["git", "describe", "--tags", "--abbrev=0"]
         execution_result = subprocess.run(
             git_command,
@@ -53,7 +55,7 @@ def get_app_version() -> str:
             capture_output=True,
             text=True,
             check=True,
-            shell=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         tag_name = execution_result.stdout.strip()
         if tag_name:
@@ -64,6 +66,30 @@ def get_app_version() -> str:
 
     # 4. すべての取得手段に失敗した場合は固定のフォールバック値を返却
     return FALLBACK_VERSION
+
+
+def parse_version(tag):
+    """
+    タグ名を大小比較用のタプルに変換する
+    同じバージョン番号では正式版がbeta版より新しくなるよう、4番目の要素に正式版=1・beta版=0を入れる
+    アップデート確認での比較と、ビルド時のタグ名の形式チェック（tools/build.py）の双方で使う
+
+    Args:
+        tag (str): タグ名（例: "v1.2.0"、"v1.2.0-beta.1"）
+
+    Returns:
+        tuple | None: (major, minor, patch, 正式版フラグ, beta番号)。形式が不正な場合は None
+    """
+    # 1. 「v1.2.0」「v1.2.0-beta.1」形式のタグ名を、メジャー・マイナー・パッチ・beta番号に分解する
+    match = re.match(r"^v(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$", str(tag).strip())
+    if match is None:
+        return None
+
+    # 2. 正式版は beta 番号を持たないため、正式版フラグを1、beta番号を0として返す
+    major, minor, patch, beta_number = match.groups()
+    if beta_number is None:
+        return (int(major), int(minor), int(patch), 1, 0)
+    return (int(major), int(minor), int(patch), 0, int(beta_number))
 
 
 # 外部から簡単に参照できるよう、モジュール読み込み時に解決したバージョン文字列を定数として公開

@@ -36,10 +36,10 @@ def mock_create_shortcut(monkeypatch):
         monkeypatch (pytest.MonkeyPatch): pytest のモンキーパッチ用オブジェクト
 
     Returns:
-        MagicMock: utils.create_app_shortcut の代わりのモック
+        MagicMock: windows_shell.create_app_shortcut の代わりのモック
     """
     create_shortcut = MagicMock()
-    monkeypatch.setattr(startup.utils, "create_app_shortcut", create_shortcut)
+    monkeypatch.setattr(startup.windows_shell, "create_app_shortcut", create_shortcut)
     monkeypatch.setattr(startup.paths, "is_executable", lambda: True)
     return create_shortcut
 
@@ -139,9 +139,21 @@ class TestRefreshShortcut:
         startup.refresh_shortcut()
         mock_create_shortcut.assert_not_called()
 
-    def test_recreates_when_registered(self, shortcut_path, mock_create_shortcut):
-        """登録済みの場合はショートカットを作り直すことを検証する"""
+    def test_recreates_when_target_missing(self, shortcut_path, mock_create_shortcut, monkeypatch, tmp_path):
+        """登録済みでリンク先が存在しない（exeを移動した）場合はショートカットを作り直すことを検証する"""
         shortcut_path.touch()
+        missing_target_path = str(tmp_path / "moved" / "EXIF Capture.exe")
+        monkeypatch.setattr(startup.windows_shell, "get_shortcut_target_path", lambda path: missing_target_path)
 
         startup.refresh_shortcut()
         mock_create_shortcut.assert_called_once_with(str(shortcut_path))
+
+    def test_keeps_when_target_exists(self, shortcut_path, mock_create_shortcut, monkeypatch, tmp_path):
+        """登録済みでリンク先が存在する（別フォルダのexeを起動した）場合はショートカットを作り直さないことを検証する"""
+        shortcut_path.touch()
+        existing_target_path = tmp_path / "EXIF Capture.exe"
+        existing_target_path.touch()
+        monkeypatch.setattr(startup.windows_shell, "get_shortcut_target_path", lambda path: str(existing_target_path))
+
+        startup.refresh_shortcut()
+        mock_create_shortcut.assert_not_called()

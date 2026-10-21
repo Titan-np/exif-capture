@@ -1,13 +1,11 @@
 import json
 import os
-import re
 import shutil
 import string
 from datetime import datetime
 from enum import StrEnum
 from typing import NamedTuple
 
-import lib.constants as constants
 import lib.filename_preset as filename_preset
 import lib.notifier as notifier
 import lib.paths as paths
@@ -30,8 +28,51 @@ _DEFAULT_SETTINGS = {
     "update.checkMode": "stable",
 }
 
+# 設定キーに対するバリデーションルール定義（キー → 検証関数名のリスト）
+# 型が違う値で後続のルールが誤判定・例外を起こさないよう、型チェックを先頭に置く（validate() は最初のエラーで打ち切る）
+_VALIDATION_RULES = {
+    "capture.triggerShortcut": [
+        "_validate_type_str",
+        "_validate_not_empty",
+        "_validate_shortcut_format",
+        "_validate_shortcut_typing_conflict",
+        "_validate_shortcut_standard_conflict",
+    ],
+    "capture.soundVolume": [
+        "_validate_type_int",
+    ],
+    "save.directory": [
+        "_validate_type_str",
+        "_validate_not_empty",
+        "_validate_path_chars",
+    ],
+    "save.filenamePreset": [
+        "_validate_type_str",
+        "_validate_not_empty",
+        "_validate_preset_placeholders",
+        "_validate_filename_chars",
+        "_validate_overwrite_risk",
+    ],
+    "save.embedDatetimeMetadata": [
+        "_validate_type_bool",
+    ],
+    "notify.onCapture": [
+        "_validate_type_bool",
+    ],
+    "notify.onAppEvent": [
+        "_validate_type_bool",
+    ],
+    "notify.onError": [
+        "_validate_type_bool",
+    ],
+    "update.checkMode": [
+        "_validate_type_str",
+        "_validate_update_check_mode",
+    ],
+}
+
 # 現キー名に対する旧キー名リスト（設定ファイル読み込み時に旧キー名があれば移行する）
-_MIGRATION_MAP = {
+_KEY_MIGRATION_MAP = {
     "capture.triggerShortcut": ["trigger_shortcut"],
     "save.directory": ["save_directory"],
     "save.filenamePreset": ["filename_preset"],
@@ -41,31 +82,6 @@ _MIGRATION_MAP = {
     "notify.onError": ["capture.enableSystemNotification"],
     "update.checkMode": ["notify.updateCheck"],
 }
-
-# 設定キーに対するバリデーションルール定義（キー → 検証関数名のリスト）
-_VALIDATION_RULES = {
-    "capture.triggerShortcut": [
-        "_validate_not_empty",
-        "_validate_shortcut_format",
-    ],
-    "save.directory": [
-        "_validate_not_empty",
-        "_validate_path_chars",
-    ],
-    "save.filenamePreset": [
-        "_validate_not_empty",
-        "_validate_preset_placeholders",
-        "_validate_filename_chars",
-        "_validate_overwrite_risk",
-    ],
-    "update.checkMode": [
-        "_validate_update_check_mode",
-    ],
-}
-
-# 旧デフォルトのファイル名プリセット（この値のままの設定は、上書きを防ぐ現デフォルトへ自動移行する）
-# {dup} は重複時のみ展開されるため、移行しても普段のファイル名は変わらない
-_LEGACY_DEFAULT_FILENAME_PRESET = "{timestamp}_{title}.png"
 
 # ファイル名の {title} に使える残り文字数がこの値未満の場合に警告する
 _TITLE_LENGTH_WARNING_THRESHOLD = 30
@@ -107,38 +123,14 @@ def _get_settings_path():
     """
     設定ファイルの絶対パスを取得する
     """
-    return paths.get_app_path(_SETTINGS_FILE_NAME)
+    return paths.resolve_app_relative_path(_SETTINGS_FILE_NAME)
 
 
 def _get_temporary_settings_path():
     """
     一時設定ファイルの絶対パスを取得する
     """
-    return paths.get_app_path(_SETTINGS_TEMPORARY_NAME)
-
-
-def _backup_corrupted_file():
-    """
-    現在の設定ファイルを日時付きファイル名で退避（バックアップ）する
-
-    Returns:
-        str | None: 退避先のファイル名（失敗時やファイル不在時は None）
-    """
-    settings_file_path = _get_settings_path()
-    if not os.path.exists(settings_file_path):
-        return None
-
-    corrupted_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    corrupted_filename = f"{_SETTINGS_FILE_NAME}.corrupted_{corrupted_timestamp}"
-    corrupted_path = paths.get_app_path(corrupted_filename)
-
-    try:
-        shutil.copy2(settings_file_path, corrupted_path)
-        notifier.log(f"読み込みに失敗した設定ファイルを退避しました: {corrupted_path}")
-        return corrupted_filename
-    except OSError as exception:
-        notifier.log(f"設定ファイルの退避に失敗しました。\n{exception}")
-        return None
+    return paths.resolve_app_relative_path(_SETTINGS_TEMPORARY_NAME)
 
 
 def load():
@@ -150,10 +142,36 @@ def load():
     global _data
     settings_file_path = _get_settings_path()
 
+    def _backup_and_notify_failure(log_details):
+        """
+        デフォルト値で上書きする前に設定ファイルを日時付きファイル名で退避し、読み込み失敗を通知する
+
+        Args:
+            log_details (str): ログにのみ出力する失敗の詳細
+        """
+        # 1. 設定ファイルを日時付きファイル名で退避（失敗した場合は退避先を None として通知する）
+        corrupted_filename = f"{_SETTINGS_FILE_NAME}.corrupted_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        corrupted_path = paths.resolve_app_relative_path(corrupted_filename)
+        try:
+            shutil.copy2(settings_file_path, corrupted_path)
+            notifier.log(f"読み込みに失敗した設定ファイルを退避しました: {corrupted_path}")
+        except OSError as exception:
+            notifier.log(f"設定ファイルの退避に失敗しました。\n{exception}")
+            corrupted_filename = None
+
+        # 2. 退避先と詳細を添えて読み込み失敗を通知
+        message = f"元の設定ファイルを「{corrupted_filename}」に退避し、デフォルト設定を適用しました。"
+        notifier.notify(
+            category=notifier.NotificationCategory.ERROR,
+            title="設定ファイルの読み込みに失敗しました。",
+            message=f"{message}\n詳細はログファイルを参照してください。",
+            log_message=f"{message}\n{log_details}",
+            buttons=[notifier.NotificationButton.OPEN_SETTINGS, notifier.NotificationButton.OPEN_LOG],
+        )
+
     # 1. 設定ファイルが存在しない場合は設定ファイルを新規作成する
     if not os.path.exists(settings_file_path):
-        _data.clear()
-        _data.update(_DEFAULT_SETTINGS)
+        _data = _DEFAULT_SETTINGS.copy()
         notifier.log(f"設定ファイルを新規作成します。({settings_file_path})")
         save()
         return
@@ -164,21 +182,11 @@ def load():
             loaded_data = json.load(file)
 
     except Exception as exception:
-        # 2-1. JSON構文エラーなど設定ファイル全体が壊れていた場合、上書き前に設定ファイルを退避する
-        corrupted_filename = _backup_corrupted_file()
-        message = f"元の設定ファイルを「{corrupted_filename}」に退避し、デフォルト設定を適用しました。"
-
-        notifier.notify(
-            title="設定ファイルの読み込みに失敗しました。",
-            message=f"{message}\n詳細はログファイルを参照してください。",
-            log_message=f"{message}\n{exception}",
-            buttons=[notifier.NotificationButton.OPEN_SETTINGS, notifier.NotificationButton.OPEN_LOG],
-            category=notifier.NotificationCategory.ERROR,
-        )
+        # 2-1. JSON構文エラーなど設定ファイル全体が壊れていた場合、上書き前に設定ファイルを退避して通知する
+        _backup_and_notify_failure(str(exception))
 
         # 2-2. デフォルト設定を適用し、新規設定ファイルとして保存する
-        _data.clear()
-        _data.update(_DEFAULT_SETTINGS)
+        _data = _DEFAULT_SETTINGS.copy()
         save()
         return
 
@@ -197,16 +205,11 @@ def load():
         else:
             # 4-2. 旧キー名の設定値が存在する場合は、現キーの値として読み込み、上書き保存対象とする
             # 1つの旧キーを複数の現キーへ引き継げるよう、ここでは取り除かずに参照のみ行う（手順8でまとめて取り除く）
-            for old_key in _MIGRATION_MAP.get(key, []):
+            for old_key in _KEY_MIGRATION_MAP.get(key, []):
                 if old_key in loaded_data:
                     loaded_value = loaded_data[old_key]
                     needs_save = True
                     break
-
-        # 4-3. 旧デフォルトのファイル名プリセットのままであれば、上書きを防ぐ現デフォルトに置き換え、上書き保存対象とする
-        if key == "save.filenamePreset" and loaded_value == _LEGACY_DEFAULT_FILENAME_PRESET:
-            loaded_value = default_value
-            needs_save = True
 
         # 5. 設定値を読み込めた場合、バリデーションを実行し正常値であれば使用
         if loaded_value is not None:
@@ -225,20 +228,13 @@ def load():
             new_data[key] = default_value
             needs_save = True
 
-    # 7. {title} が空でも保存先パスが最大長を超える場合、ファイル名プリセットをデフォルト値に戻し、設定ファイルを退避・保存対象とする
-    # フォルダとファイル名の組み合わせで決まるため、項目単位の検証（手順5）とは別に行う
-    output_path_result = _validate_output_path_length(new_data)
-    if output_path_result and output_path_result.is_error:
-        invalid_keys["save.filenamePreset"] = (new_data["save.filenamePreset"], output_path_result.message)
-        new_data["save.filenamePreset"] = _DEFAULT_SETTINGS["save.filenamePreset"]
-        needs_save = True
-
-    _data.clear()
-    _data.update(new_data)
+    # 7. 組み立てた設定で、メモリ上の設定を丸ごと置き換える
+    # clear() → update() では、その間に他スレッド（撮影など）の get() が一瞬デフォルト値を返してしまうため、再代入で一度に切り替える
+    _data = new_data
     notifier.log(f"設定ファイルを読み込みました。({settings_file_path})")
 
     # 8. 旧キーをまとめて取り除く（現キーと旧キーが両方ある場合の旧キーも含む）
-    for old_keys in _MIGRATION_MAP.values():
+    for old_keys in _KEY_MIGRATION_MAP.values():
         for old_key in old_keys:
             if old_key in loaded_data:
                 del loaded_data[old_key]
@@ -248,19 +244,9 @@ def load():
     if loaded_data:
         needs_save = True
 
-    # 10. 設定ファイル内に壊れている設定値が含まれていた場合、上書き前に設定ファイルを退避する
+    # 10. 設定ファイル内に壊れている設定値が含まれていた場合、上書き前に設定ファイルを退避して通知する
     if invalid_keys:
-        corrupted_filename = _backup_corrupted_file()
-        message = f"元の設定ファイルを「{corrupted_filename}」に退避し、デフォルト設定を適用しました。"
-        log_details = "\n".join([f"キー '{key}' の値 ({item[0]!r}) が不正です: {item[1]}" for key, item in invalid_keys.items()])
-
-        notifier.notify(
-            title="設定ファイルの読み込みに失敗しました。",
-            message=f"{message}\n詳細はログファイルを参照してください。",
-            log_message=f"{message}\n{log_details}",
-            buttons=[notifier.NotificationButton.OPEN_SETTINGS, notifier.NotificationButton.OPEN_LOG],
-            category=notifier.NotificationCategory.ERROR,
-        )
+        _backup_and_notify_failure("\n".join([f"キー '{key}' の値 ({item[0]!r}) が不正です: {item[1]}" for key, item in invalid_keys.items()]))
 
     # 11. 設定ファイルの更新が必要な場合、ファイルを保存する
     if needs_save:
@@ -315,18 +301,23 @@ def save():
                 pass
 
 
-def has_validation_rule(key):
+# 設定ファイルの手編集でのみ失敗しうるルール（画面入力で起こりうる検証からは除く）
+# 設定画面の入力部品は常に正しい型の値を返し、ドロップダウンは定義済みの選択肢しか選べないため
+_FILE_ONLY_VALIDATION_RULES = ("_validate_type_str", "_validate_type_int", "_validate_type_bool", "_validate_update_check_mode")
+
+
+def can_fail_input_validation(key):
     """
-    指定された設定キーにバリデーションルールが定義されているかを判定する
-    UI側でバリデーション有無を意識せずに自動制御できるようにするために使用する
+    設定画面の入力で、指定された設定キーに検証エラー（警告を含む）が起こりうるかを判定する
+    設定画面が、エラー表示枠を確保する項目を判定するために使用する
 
     Args:
         key (str): 設定キー
 
     Returns:
-        bool: バリデーションルールが存在する場合は True、なければ False
+        bool: 設定ファイルの手編集でのみ失敗しうるルール以外の検証ルールがある場合は True
     """
-    return key in _VALIDATION_RULES and bool(_VALIDATION_RULES[key])
+    return any(rule not in _FILE_ONLY_VALIDATION_RULES for rule in _VALIDATION_RULES.get(key, []))
 
 
 def validate(key, value):
@@ -384,14 +375,15 @@ def validate_all(data):
 def _validate_output_path_length(data):
     """
     保存先フォルダとファイル名プリセットの組み合わせで、保存先フルパスが最大パス長に収まるかを検証する
-    {title} を空とした最短フルパスで判定し、超過はエラー、{title} に使える残り文字数が少なければ警告とする
+    {title} を空とした最短フルパスで判定し、超過時と {title} に使える残り文字数が少ない場合に警告とする
+    値の書式不正ではなく、フォルダの展開結果（別PC・別ユーザーで変わりうる）との組み合わせで決まるため、エラーにはしない
     項目単位では判定できないため、設定値の辞書を受け取る
 
     Args:
         data (dict): {設定キー: 値} の辞書
 
     Returns:
-        ValidationResult | None: 超過時はエラー、残り文字数が少ない場合は警告（問題なければ None）
+        ValidationResult | None: 超過時または残り文字数が少ない場合は警告（問題なければ None）
     """
     # 1. 書式エラーや禁止文字があるとパスを組み立てられないため、両項目がそろい項目単位のエラーが無い場合のみ対象とする
     directory = data.get("save.directory")
@@ -405,12 +397,12 @@ def _validate_output_path_length(data):
 
     # 2. 撮影時と同じ組み立て処理で {title} を空としたフルパスを組み立て、最大パス長までの残り文字数を求める
     shortest_path = filename_preset.format_output_path(directory, preset_string, title="")
-    output_path_margin = constants.WINDOWS_MAX_PATH_LENGTH - len(shortest_path)
+    output_path_margin = paths.WINDOWS_MAX_PATH_LENGTH - len(shortest_path)
 
-    # 3. {title} が空でも超える場合は、どう撮影しても失敗するためエラー
+    # 3. {title} が空でも超える場合は、どう撮影しても保存に失敗するため警告（撮影時にもエラー通知される）
     if output_path_margin < 0:
-        return ValidationResult.error(
-            f"保存先パスが最大長を超えます。（{len(shortest_path)}/{constants.WINDOWS_MAX_PATH_LENGTH}文字）\nフォルダパスかファイル名を短くしてください。"
+        return ValidationResult.warning(
+            f"保存先パスが最大長を超えるため、保存に失敗します。（{len(shortest_path)}/{paths.WINDOWS_MAX_PATH_LENGTH}文字）\nフォルダパスかファイル名を短くしてください。"
         )
 
     # 4. {title} を含み残り文字数が少ない場合は、長いタイトルのウィンドウで失敗しうるため警告
@@ -421,6 +413,52 @@ def _validate_output_path_length(data):
             f"タイトルに使える残り文字数は{output_path_margin}文字です。\n長いタイトルのウィンドウは保存に失敗する可能性があります。"
         )
 
+    return None
+
+
+def _validate_type_str(value):
+    """
+    設定値が文字列であるかを検証する
+
+    Args:
+        value: 検証する値
+
+    Returns:
+        ValidationResult | None: エラー（文字列でない場合はメッセージ、問題なければ None）
+    """
+    if type(value) is not str:
+        return ValidationResult.error("文字列で指定してください。")
+    return None
+
+
+def _validate_type_int(value):
+    """
+    設定値が整数であるかを検証する
+    bool は int の派生型のため、isinstance ではなく type の一致で判定し、True / False を整数として受け入れない
+
+    Args:
+        value: 検証する値
+
+    Returns:
+        ValidationResult | None: エラー（整数でない場合はメッセージ、問題なければ None）
+    """
+    if type(value) is not int:
+        return ValidationResult.error("整数で指定してください。")
+    return None
+
+
+def _validate_type_bool(value):
+    """
+    設定値が真偽値であるかを検証する
+
+    Args:
+        value: 検証する値
+
+    Returns:
+        ValidationResult | None: エラー（真偽値でない場合はメッセージ、問題なければ None）
+    """
+    if type(value) is not bool:
+        return ValidationResult.error("true か false で指定してください。")
     return None
 
 
@@ -451,21 +489,27 @@ def _validate_path_chars(value):
     """
     path_string = str(value).strip()
 
-    # チルダ（~）や環境変数を展開して検証対象の絶対パスを取得
+    # 1. チルダ（~）や環境変数を展開して検証対象の絶対パスを取得
     expanded_path = paths.expand_path(path_string)
 
-    # パス全体で使用できない禁止文字（< > " | ? *）をチェック
+    # 2. パス全体で使用できない禁止文字（< > " | ? *）をチェック
     for char in expanded_path:
         if char in '<>"|?*':
             return ValidationResult.error(f"フォルダパスに使用できない文字が含まれています: {char}")
 
-    # ドライブレターコロン（例: 'C:\' のコロン）以外の不正なコロンをチェック
+    # 3. ドライブレターコロン（例: 'C:\' のコロン）以外の不正なコロンをチェック
     drive, rest_path = os.path.splitdrive(expanded_path)
     if ":" in rest_path:
         return ValidationResult.error("フォルダパスに使用できない文字が含まれています: :")
 
-    # ドライブレターの形式チェック（1文字の英字 + コロン以外ならエラー）
-    if drive and (len(drive) != 2 or not drive[0].isalpha() or drive[1] != ":"):
+    # 4. ドライブ部分の形式チェック
+    # UNCパス（\\サーバー名\共有名）はネットワーク共有を保存先にできるよう、サーバー名と共有名がそろっていれば許可する
+    if drive.startswith("\\\\"):
+        server_name, _, share_name = drive[2:].partition("\\")
+        if not server_name or not share_name or ":" in drive:
+            return ValidationResult.error(f"ネットワークパスの指定が不正です: {drive}")
+    # それ以外は、ドライブレター（1文字の英字 + コロン）のみ許可する
+    elif drive and (len(drive) != 2 or not drive[0].isalpha() or drive[1] != ":"):
         return ValidationResult.error(f"ドライブ指定が不正です: {drive}")
 
     return None
@@ -473,7 +517,8 @@ def _validate_path_chars(value):
 
 def _validate_filename_chars(value):
     """
-    ファイル名（プレースホルダ部分を除く固定文字列）にWindowsで使用できない禁止文字が含まれていないかを検証する
+    ファイル名プリセットを展開したファイル名に、Windowsで使用できない禁止文字が含まれていないかを検証する
+    固定文字列だけでなく、{timestamp:%H:%M} など書式指定の出力に含まれる禁止文字も検出するため、展開後の文字列で判定する
 
     Args:
         value: 検証する値
@@ -481,13 +526,16 @@ def _validate_filename_chars(value):
     Returns:
         ValidationResult | None: エラー（禁止文字が含まれる場合はメッセージ、問題なければ None）
     """
-    preset_string = str(value).strip()
+    # 1. 撮影時と同じ組み立て処理でダミー値を渡して展開する
+    # {dup} は1件目では空文字になるため、2件目の連番で展開してテンプレートの文字も検査対象に含める
+    # 書式エラーは _validate_preset_placeholders で検出するため、ここでは対象外とする
+    try:
+        filename = filename_preset.format_output_path("", str(value).strip(), title="TestTitle", sequence_number=2)
+    except (KeyError, ValueError, IndexError):
+        return None
 
-    # 波括弧部分（{...}）を除去した固定文字列を取得
-    fixed_text = re.sub(r"\{[^{}]*\}", "", preset_string)
-
-    # Windowsのファイル名で使用できない禁止文字をチェック
-    for char in fixed_text:
+    # 2. Windowsのファイル名で使用できない禁止文字をチェック
+    for char in filename:
         if char in '<>:"/\\|?*':
             return ValidationResult.error(f"ファイル名に使用できない文字が含まれています: {char}")
 
@@ -509,6 +557,44 @@ def _validate_shortcut_format(value):
 
     if not hotkey.Manager.is_valid_shortcut(str(value)):
         return ValidationResult.error("有効なショートカットキーを入力してください。")
+    return None
+
+
+def _validate_shortcut_typing_conflict(value):
+    """
+    ショートカットキーが、文字入力と衝突する組み合わせでないかを検証する
+    登録したキーはOS全体で横取りされ、すべてのアプリでその文字を入力できなくなるため警告する
+
+    Args:
+        value: 検証する値
+
+    Returns:
+        ValidationResult | None: 警告（文字入力と衝突する場合はメッセージ、問題なければ None）
+    """
+    # 循環インポートを防ぐため関数内でインポート
+    import lib.hotkey as hotkey
+
+    if hotkey.Manager.conflicts_with_typing(str(value)):
+        return ValidationResult.warning("すべてのアプリでこのキーを入力できなくなります。\nCtrl や Alt との組み合わせをおすすめします。")
+    return None
+
+
+def _validate_shortcut_standard_conflict(value):
+    """
+    ショートカットキーが、他のアプリで標準的に使われるショートカット（コピーなど）と同じでないかを検証する
+    登録したキーはOS全体で横取りされ、すべてのアプリでその操作が使えなくなるため警告する
+
+    Args:
+        value: 検証する値
+
+    Returns:
+        ValidationResult | None: 警告（標準的なショートカットと同じ場合はメッセージ、問題なければ None）
+    """
+    # 循環インポートを防ぐため関数内でインポート
+    import lib.hotkey as hotkey
+
+    if hotkey.Manager.conflicts_with_standard_shortcut(str(value)):
+        return ValidationResult.warning("他のアプリのショートカット（コピーなど）が使えなくなります。\n別の組み合わせをおすすめします。")
     return None
 
 
@@ -549,16 +635,17 @@ def _validate_overwrite_risk(value):
     Returns:
         ValidationResult | None: 警告（上書きの恐れがある場合はメッセージ、問題なければ None）
     """
-    # 書式文字列を解析し、置換フィールドの (名前, 書式指定) を取り出す（固定文字列中の同名の語は対象外）
+    # 1. 書式文字列を解析し、置換フィールドの (名前, 書式指定) を取り出す（固定文字列中の同名の語は対象外）
     fields = [(field_name, format_spec) for _, field_name, format_spec, _ in string.Formatter().parse(str(value)) if field_name]
 
-    # 連番で重複を避けられるプレースホルダがあるか
+    # 2. 連番で重複を避けられるプレースホルダがあれば問題なし
     if any(field_name in ("index", "dup") for field_name, _ in fields):
         return None
-    # マイクロ秒単位の日時で、撮影ごとに異なるファイル名になるか
+    # 3. マイクロ秒単位の日時で、撮影ごとに異なるファイル名になれば問題なし
     if any(field_name == "timestamp" and "%f" in (format_spec or "") for field_name, format_spec in fields):
         return None
 
+    # 4. どちらも無い場合は、同名ファイルを上書きする恐れがあるため警告する
     return ValidationResult.warning("同名のファイルがある場合は上書きされます。\n{dup} か {index} を含めると上書きを防げます。")
 
 

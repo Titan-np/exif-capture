@@ -27,7 +27,7 @@ def clean_previous_build_artifacts():
     Returns:
         bool: 削除処理が正常に完了した場合はTrue、失敗した場合はFalse
     """
-    # 削除対象となるフォルダやファイルのパス一覧
+    # 1. 削除対象となるフォルダやファイルのパス一覧
     targets_to_remove = [
         os.path.join(project_root_directory_path, "build"),
         os.path.join(project_root_directory_path, "dist"),
@@ -35,27 +35,28 @@ def clean_previous_build_artifacts():
         os.path.join(source_directory_path, "_version.py"),
     ]
 
-    def remove_readonly_permission(function_reference, target_path, excinfo):
+    def remove_readonly_permission(function_reference, target_path, exception):
         """
-        shutil.rmtreeのエラーハンドラ。ファイルが読み取り専用の場合に書き込み権限を付与して削除を再試行する
+        shutil.rmtreeのエラーハンドラ（onexc）。ファイルが読み取り専用の場合に書き込み権限を付与して削除を再試行する
 
         Args:
             function_reference (callable): 再実行する削除関数の参照
             target_path (str): 削除対象のファイルまたはディレクトリのパス
-            excinfo (tuple): 例外情報 (type, value, traceback)
+            exception (BaseException): 発生した例外
         """
-        # 対象のパスに書き込み権限を付与
+        # 1. 対象のパスに書き込み権限を付与
         os.chmod(target_path, stat.S_IWRITE)
-        # 削除処理を再実行
+        # 2. 削除処理を再実行
         function_reference(target_path)
 
-    # 削除対象を順番に削除
+    # 2. 削除対象を順番に削除
     for target_path in targets_to_remove:
         if os.path.exists(target_path):
             try:
                 if os.path.isdir(target_path):
                     # Windows環境で読み取り専用ファイルが存在しても削除できるようハンドラを指定
-                    shutil.rmtree(target_path, onerror=remove_readonly_permission)
+                    # （onerror は Python 3.12 で非推奨のため onexc を使う）
+                    shutil.rmtree(target_path, onexc=remove_readonly_permission)
                 else:
                     # 単一ファイルの場合も読み取り専用属性を解除してから削除
                     os.chmod(target_path, stat.S_IWRITE)
@@ -98,17 +99,24 @@ def build_app():
     Returns:
         int: ビルド処理の終了コード (0: 成功, 1以上: エラー)
     """
-    # ビルド実行前にキャッシュや中間生成物をクリア
+    # 1. ビルドに埋め込むバージョン情報を取得し、タグ名の形式を確認する
+    # 形式が不正なバージョンで作った exe は自身のバージョンを解析できず、以後アップデートを検知できないため、ビルドを中止する
+    # （CI もこのスクリプトでビルドするため、誤った形式のタグを push してもリリースは作成されない）
+    build_version = version.get_app_version()
+    if version.parse_version(build_version) is None:
+        print(f"バージョン番号の形式が不正です: {build_version}\nタグ名は「v1.2.0」または「v1.2.0-beta.1」の形式にしてください。")
+        return 1
+
+    # 2. ビルド実行前にキャッシュや中間生成物をクリア
     if not clean_previous_build_artifacts():
         return 1
 
-    # ビルドに埋め込むバージョン情報を取得し、exeにバンドルする「バージョン情報一時ファイル」を生成
-    build_version = version.get_app_version()
+    # 3. exeにバンドルする「バージョン情報一時ファイル」を生成
     version_file_path = create_version_file(build_version)
 
     print(f"ビルドを開始します: {constants.APP_NAME} ({build_version})")
 
-    # PyInstallerのコマンド構築
+    # 4. PyInstallerのコマンド構築
     command = [
         "pyinstaller",
         "--noconfirm",  # 既存のdist/buildを上書き
@@ -116,7 +124,7 @@ def build_app():
         "--noconsole",
         "--onefile",
         # exe本体のアイコンも、ビルド対象のバージョン（正式版 / beta版）に合わせて切り替える
-        f"--icon=assets/{paths.get_icon_filename(build_version)}",
+        f"--icon={paths.get_icon_path(build_version, is_development=False)}",
         # assetsフォルダ内のすべてのファイルをバンドル対象にする (Windows環境を想定してセミコロン区切り)
         "--add-data=assets;assets",
         "--paths=src",  # src フォルダを明示的に探索パスに追加
@@ -124,7 +132,7 @@ def build_app():
         "src/main.pyw",
     ]
 
-    # ビルド実行 (カレントフォルダをプロジェクトのルートに指定)
+    # 5. ビルド実行 (カレントフォルダをプロジェクトのルートに指定)
     try:
         result = subprocess.run(command, cwd=project_root_directory_path)
 
@@ -151,7 +159,7 @@ def build_app():
         print(f"\n予期せぬエラーが発生しました:\n{exception}")
         return 1
     finally:
-        # ビルド終了後、開発環境の「バージョン情報一時ファイル」を削除
+        # 6. ビルド終了後、開発環境の「バージョン情報一時ファイル」を削除
         if os.path.exists(version_file_path):
             try:
                 os.remove(version_file_path)
@@ -161,13 +169,13 @@ def build_app():
 
 
 if __name__ == "__main__":
-    # ビルド処理を実行し、結果の終了コードを受け取る
+    # 1. ビルド処理を実行し、結果の終了コードを受け取る
     execution_exit_code = build_app()
 
-    # CI環境（GitHub Actions等）での自動実行でない場合、ログ確認できるようキーを押下させてから終了する
+    # 2. CI環境（GitHub Actions等）での自動実行でない場合、ログ確認できるようキーを押下させてから終了する
     is_ci_environment = os.getenv("CI") == "true" or "GITHUB_ACTIONS" in os.environ
     if not is_ci_environment:
         input("\nEnterキーを押すと終了します...")
 
-    # build_app()の戻り値を終了コードとし、プロセスを終了する
+    # 3. build_app()の戻り値を終了コードとし、プロセスを終了する
     sys.exit(execution_exit_code)

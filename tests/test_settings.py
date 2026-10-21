@@ -71,6 +71,23 @@ class TestValidation:
             validation_error = settings._validate_path_chars(valid_path)
             assert validation_error is None
 
+    def test_validate_path_chars_accepts_unc_path(self):
+        """サーバー名と共有名がそろったUNCパス（ネットワーク共有）が承認されることを検証する"""
+        assert settings._validate_path_chars("\\\\server\\share") is None
+        assert settings._validate_path_chars("\\\\server\\share\\Screenshots") is None
+
+    def test_validate_path_chars_rejects_incomplete_unc_path(self):
+        """共有名が無い、または共有名にコロンを含むUNCパスが拒否されることを検証する"""
+        invalid_unc_path_list = [
+            "\\\\server",
+            "\\\\server\\",
+            "\\\\server\\share:x",
+        ]
+        for invalid_unc_path in invalid_unc_path_list:
+            validation_error = settings._validate_path_chars(invalid_unc_path)
+            assert validation_error is not None, invalid_unc_path
+            assert "ネットワークパスの指定が不正です" in validation_error.message
+
     def test_validate_filename_chars_rejects_forbidden_chars(self):
         """ファイル名として使用できない禁止文字が固定文字列に含まれる場合に拒否されることを検証する"""
         # Windowsファイル名の禁止文字
@@ -88,6 +105,19 @@ class TestValidation:
         validation_error = settings._validate_filename_chars(safe_preset)
         assert validation_error is None
 
+    def test_validate_filename_chars_rejects_forbidden_chars_in_placeholder_output(self):
+        """書式指定の展開結果に禁止文字が含まれる場合に拒否されることを検証する"""
+        # {timestamp} の書式の「:」「/」、{dup} のテンプレートの「/」は展開後のファイル名に現れる
+        forbidden_output_preset_list = [
+            "{timestamp:%H:%M}.png",
+            "{timestamp:%Y/%m}.png",
+            "{title}{dup:/%d}.png",
+        ]
+        for forbidden_output_preset in forbidden_output_preset_list:
+            validation_error = settings._validate_filename_chars(forbidden_output_preset)
+            assert validation_error is not None
+            assert "ファイル名に使用できない文字が含まれています" in validation_error.message
+
     def test_validate_shortcut_format_delegates_to_hotkey_manager(self):
         """ショートカットキー検証が lib.hotkey と連動して正常・異常を判定することを検証する"""
         # 有効なショートカット
@@ -97,6 +127,20 @@ class TestValidation:
         # 無効なショートカット（空文字・末尾プラスなど）
         assert settings._validate_shortcut_format("") is not None
         assert settings._validate_shortcut_format("ctrl+") is not None
+
+    def test_validate_warns_shortcut_conflicting_with_typing(self):
+        """文字入力と衝突するショートカットキーで、保存可能な警告が返ることを検証する"""
+        validation_result = settings.validate("capture.triggerShortcut", "a")
+        assert validation_result.level == settings.ValidationLevel.WARNING
+
+        # デフォルトのショートカットキーでは警告しない
+        assert settings.validate("capture.triggerShortcut", settings._DEFAULT_SETTINGS["capture.triggerShortcut"]) is None
+
+    def test_validate_warns_shortcut_conflicting_with_standard_shortcut(self):
+        """他のアプリの標準的なショートカット（Ctrl+C など）で、保存可能な警告が返ることを検証する"""
+        validation_result = settings.validate("capture.triggerShortcut", "ctrl+c")
+        assert validation_result.level == settings.ValidationLevel.WARNING
+        assert "他のアプリのショートカット" in validation_result.message
 
     def test_validate_preset_placeholders_accepts_allowed_keys(self):
         """許可されているプレースホルダ（timestamp, title, index, dup）が承認されることを検証する"""
@@ -193,6 +237,34 @@ class TestValidation:
         assert validation_result.is_error
         assert validation_result.message == "エラー"
 
+    def test_validate_type_rejects_mismatched_type(self):
+        """設定値の型がデフォルト値の型と異なる場合に、後続のルールより先にエラーが返ることを検証する"""
+        # (設定キー, 型の異なる値) の組（bool は int の派生型だが、整数項目では拒否する）
+        mismatched_value_list = [
+            ("capture.soundVolume", "50"),
+            ("capture.soundVolume", True),
+            ("capture.soundVolume", 50.0),
+            ("notify.onCapture", "false"),
+            ("notify.onCapture", 0),
+            ("capture.triggerShortcut", 5),
+            ("save.directory", 1),
+        ]
+        for key, value in mismatched_value_list:
+            validation_result = settings.validate(key, value)
+            assert validation_result is not None and validation_result.is_error
+
+        # 型が一致する場合はエラーにならない
+        assert settings.validate("capture.soundVolume", 50) is None
+        assert settings.validate("notify.onCapture", False) is None
+
+    def test_can_fail_input_validation_ignores_file_only_rules(self):
+        """設定ファイルの手編集でのみ失敗しうるルール（型チェック・選択肢の確認）だけの項目は False、それ以外の検証ルールがある項目は True が返ることを検証する"""
+        assert settings.can_fail_input_validation("capture.soundVolume") is False
+        assert settings.can_fail_input_validation("notify.onCapture") is False
+        assert settings.can_fail_input_validation("update.checkMode") is False
+        assert settings.can_fail_input_validation("save.directory") is True
+        assert settings.can_fail_input_validation("unknown.key") is False
+
 
 class TestOutputPathLength:
     """
@@ -209,11 +281,11 @@ class TestOutputPathLength:
             "save.filenamePreset": filename_preset,
         }
 
-    def test_validate_all_rejects_path_exceeding_max_length(self):
-        """{title} が空でも最短フルパスが260文字になる場合にプリセット側へエラーが返ることを検証する"""
+    def test_validate_all_warns_path_exceeding_max_length(self):
+        """{title} が空でも最短フルパスが260文字になる場合にプリセット側へ警告が返ることを検証する"""
         validation_results = settings.validate_all(self._build_settings_data(252))
 
-        assert validation_results["save.filenamePreset"].is_error
+        assert validation_results["save.filenamePreset"].level == settings.ValidationLevel.WARNING
         assert "最大長" in validation_results["save.filenamePreset"].message
         assert "save.directory" not in validation_results
 
@@ -413,21 +485,28 @@ class TestSettingsManagerIO:
         assert settings.get("capture.triggerShortcut") == "shift+print screen"
         assert settings.get("capture.soundVolume") == 80
 
-    def test_load_migrates_legacy_default_preset(self, isolated_settings_manager):
-        """旧デフォルトのファイル名プリセットのままの場合、現デフォルトへ置き換えて保存されることを検証する"""
+    def test_load_replaces_mismatched_type_with_default(self, isolated_settings_manager):
+        """型の異なる設定値がデフォルト値へ差し替えられ、元の設定ファイルが退避されることを検証する"""
+        mismatched_type_settings = {
+            "capture.soundVolume": "50",  # 整数項目に文字列
+            "notify.onCapture": "false",  # 真偽値項目に文字列
+        }
+
         with open(settings._get_settings_path(), "w", encoding="utf-8") as file:
-            json.dump({"save.filenamePreset": settings._LEGACY_DEFAULT_FILENAME_PRESET}, file, indent=4)
+            json.dump(mismatched_type_settings, file, indent=4)
 
         settings.load()
 
-        # メモリ上・ファイル上ともに現デフォルトになっていることを確認
-        default_preset = settings._DEFAULT_SETTINGS["save.filenamePreset"]
-        assert settings.get("save.filenamePreset") == default_preset
-        with open(settings._get_settings_path(), "r", encoding="utf-8") as file:
-            assert json.load(file)["save.filenamePreset"] == default_preset
+        # 両項目ともデフォルト値に差し替えられていることを確認
+        assert settings.get("capture.soundVolume") == settings._DEFAULT_SETTINGS["capture.soundVolume"]
+        assert settings.get("notify.onCapture") is settings._DEFAULT_SETTINGS["notify.onCapture"]
 
-    def test_load_replaces_preset_when_path_exceeds_max_length(self, isolated_settings_manager):
-        """フォルダとプリセットの組み合わせで最大パス長を超える場合、プリセットがデフォルト値に戻り元ファイルが退避されることを検証する"""
+        # 元の設定ファイルが退避されていることを確認
+        backup_files = [filename for filename in os.listdir(os.path.dirname(settings._get_settings_path())) if "settings.json.corrupted_" in filename]
+        assert len(backup_files) == 1
+
+    def test_load_keeps_preset_when_path_exceeds_max_length(self, isolated_settings_manager):
+        """フォルダとプリセットの組み合わせで最大パス長を超えても、両項目が維持され元ファイルが退避されないことを検証する"""
         long_directory = "C:\\" + "a" * 252
         too_long_settings = {
             "save.directory": long_directory,
@@ -439,13 +518,13 @@ class TestSettingsManagerIO:
 
         settings.load()
 
-        # フォルダは維持され、プリセットのみデフォルト値に戻ることを確認
+        # フォルダ・プリセットともに読み込んだ値が維持されることを確認
         assert settings.get("save.directory") == long_directory
-        assert settings.get("save.filenamePreset") == settings._DEFAULT_SETTINGS["save.filenamePreset"]
+        assert settings.get("save.filenamePreset") == "{title}.png"
 
-        # 元の設定ファイルが退避されていることを確認
+        # 設定ファイルが退避されていないことを確認
         backup_files = [filename for filename in os.listdir(os.path.dirname(settings._get_settings_path())) if "settings.json.corrupted_" in filename]
-        assert len(backup_files) == 1
+        assert len(backup_files) == 0
 
     def test_save_atomic_write_creates_valid_json(self, isolated_settings_manager):
         """save() による書き込みで一時ファイルを経由して安全にJSONが保存されることを検証する"""

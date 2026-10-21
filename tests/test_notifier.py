@@ -1,9 +1,10 @@
 """
 notifier モジュールの単体テスト
-通知の種別ごとの設定に応じたトースト通知の表示有無と、ログファイルの世代切り替えを検証する
+通知の種別ごとの設定に応じたトースト通知の表示有無、通知のクリック時の処理、ログファイルの世代切り替えを検証する
 """
 
 import os
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -32,7 +33,7 @@ class TestNotifyCategory:
         """種別に対応する設定がオンの場合、トースト通知が送信されることを検証する"""
         isolated_settings_manager.set(category, enabled_value)
 
-        _original_notify("テスト通知", category=category)
+        _original_notify(category=category, title="テスト通知")
 
         notifier._send.assert_called_once()
 
@@ -41,7 +42,7 @@ class TestNotifyCategory:
         """種別に対応する設定がオフの場合、トースト通知は送信されずログのみ出力されることを検証する"""
         isolated_settings_manager.set(category, disabled_value)
 
-        _original_notify("テスト通知", category=category)
+        _original_notify(category=category, title="テスト通知")
 
         notifier._send.assert_not_called()
         # fixture の設定ファイル作成時のログも同じモックに記録されるため、回数ではなく最後の呼び出し内容で確認する
@@ -52,14 +53,77 @@ class TestNotifyCategory:
         isolated_settings_manager.set(notifier.NotificationCategory.CAPTURE, False)
         isolated_settings_manager.set(notifier.NotificationCategory.ERROR, True)
 
-        _original_notify("テスト通知", category=notifier.NotificationCategory.ERROR)
+        _original_notify(category=notifier.NotificationCategory.ERROR, title="テスト通知")
 
         notifier._send.assert_called_once()
 
     def test_category_is_required(self):
         """種別を指定せずに呼び出すと TypeError になり、設定で制御できない通知を作れないことを検証する"""
         with pytest.raises(TypeError):
-            _original_notify("テスト通知")
+            _original_notify(title="テスト通知")
+
+
+class TestNotifyClick:
+    """
+    通知のクリック時の処理（notify 内の _handle_click）に関するテストクラス
+    """
+
+    @pytest.fixture
+    def mock_open_actions(self, monkeypatch):
+        """
+        クリック時に呼ばれるファイル・フォルダを開く処理をモック化する fixture
+
+        Args:
+            monkeypatch (pytest.MonkeyPatch): pytest のモンキーパッチ用オブジェクト
+
+        Returns:
+            dict: 処理名 → モックの辞書
+        """
+        mock_actions = {"safe_open_path": MagicMock(), "open_log_file": MagicMock()}
+        for name, mock_action in mock_actions.items():
+            monkeypatch.setattr(notifier.windows_shell, name, mock_action)
+        return mock_actions
+
+    def _send_and_get_click_handler(self, **notify_arguments):
+        """エラー種別で通知を送信し、_send に渡されたクリック時の処理を返す"""
+        _original_notify(category=notifier.NotificationCategory.ERROR, title="テスト通知", **notify_arguments)
+        return notifier._send.call_args.kwargs["on_click"]
+
+    def test_body_click_opens_image(self, isolated_settings_manager, mock_open_actions, tmp_path):
+        """ボタンが無くても、画像付きの通知本体をクリックすると画像を開くことを検証する"""
+        image_file = tmp_path / "capture.png"
+        image_file.touch()
+
+        click_handler = self._send_and_get_click_handler(image_path=str(image_file))
+        # 通知本体のクリックでは arguments が空文字で渡される
+        click_handler({"arguments": ""})
+
+        mock_open_actions["safe_open_path"].assert_called_once_with(str(image_file), resource_name="キャプチャした画像")
+
+    def test_button_click_runs_button_action(self, isolated_settings_manager, mock_open_actions):
+        """ボタンをクリックすると、ボタンに対応する処理を実行することを検証する"""
+        click_handler = self._send_and_get_click_handler(buttons=[notifier.NotificationButton.OPEN_LOG])
+        # ボタンのクリックでは「http:ボタン文言」が arguments で渡される
+        click_handler({"arguments": f"http:{notifier.NotificationButton.OPEN_LOG}"})
+
+        mock_open_actions["open_log_file"].assert_called_once()
+
+    def test_release_page_button_opens_given_url(self, isolated_settings_manager, monkeypatch):
+        """「リリースページを開く」ボタンのクリックで、通知時に渡したURLをブラウザで開くことを検証する"""
+        opened_urls = []
+        monkeypatch.setattr(notifier.webbrowser, "open", opened_urls.append)
+        release_page_url = "https://github.com/example/releases/tag/v9.9.9"
+
+        click_handler = self._send_and_get_click_handler(
+            buttons=[notifier.NotificationButton.OPEN_RELEASE_PAGE], release_page_url=release_page_url
+        )
+        click_handler({"arguments": f"http:{notifier.NotificationButton.OPEN_RELEASE_PAGE}"})
+
+        assert opened_urls == [release_page_url]
+
+    def test_no_click_handler_without_buttons_and_image(self, isolated_settings_manager):
+        """ボタンも画像も無い通知には、クリック時の処理を渡さないことを検証する"""
+        assert self._send_and_get_click_handler() is None
 
 
 class TestRotateLogFile:
@@ -79,7 +143,7 @@ class TestRotateLogFile:
         Returns:
             pathlib.Path: ログファイルを置くディレクトリ
         """
-        monkeypatch.setattr(paths, "get_app_path", lambda relative_path="": str(tmp_path / relative_path))
+        monkeypatch.setattr(paths, "resolve_app_relative_path", lambda relative_path="": str(tmp_path / relative_path))
         monkeypatch.setattr(notifier, "LOG_FILE_MAX_BYTES", 10)
 
         directory = tmp_path / notifier.LOG_DIRECTORY_NAME

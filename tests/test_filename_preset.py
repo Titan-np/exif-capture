@@ -3,10 +3,14 @@ filename_preset モジュールの単体テスト
 ファイル名用の日時フォーマット、{dup} の書式、保存先パスの組み立てと既存ファイルと被らない連番の探索を検証する
 """
 
+import datetime
 import os
 import pytest
 
 import lib.filename_preset as filename_preset
+
+# テストで使う撮影日時
+_CAPTURED_AT = datetime.datetime(2026, 10, 19, 12, 34, 56)
 
 
 class TestFormattableTimestamp:
@@ -88,27 +92,32 @@ class TestBuildOutputPath:
 
     def test_returns_first_path_when_not_exists(self, tmp_path):
         """同名ファイルが無い場合は連番なし（1件目）のパスが返ることを検証する"""
-        output_path = filename_preset.build_output_path(str(tmp_path), "{title}{dup}.png", "AppTitle")
+        output_path = filename_preset.build_output_path(str(tmp_path), "{title}{dup}.png", "AppTitle", _CAPTURED_AT)
         assert output_path == os.path.join(str(tmp_path), "AppTitle.png")
+
+    def test_uses_captured_at_for_timestamp(self, tmp_path):
+        """{timestamp} に、引数で渡した撮影日時がデフォルト書式で埋め込まれることを検証する"""
+        output_path = filename_preset.build_output_path(str(tmp_path), "{timestamp}.png", "", _CAPTURED_AT)
+        assert output_path == os.path.join(str(tmp_path), "20261019_123456.png")
 
     def test_skips_existing_files(self, tmp_path):
         """同名ファイルがある場合は空いている連番のパスが返ることを検証する"""
         (tmp_path / "AppTitle.png").touch()
         (tmp_path / "AppTitle (2).png").touch()
 
-        output_path = filename_preset.build_output_path(str(tmp_path), "{title}{dup}.png", "AppTitle")
+        output_path = filename_preset.build_output_path(str(tmp_path), "{title}{dup}.png", "AppTitle", _CAPTURED_AT)
         assert output_path == os.path.join(str(tmp_path), "AppTitle (3).png")
 
     def test_skips_existing_files_with_index(self, tmp_path):
         """{index} の場合も既存ファイルと被らない番号が返ることを検証する"""
         (tmp_path / "shot_001.png").touch()
 
-        output_path = filename_preset.build_output_path(str(tmp_path), "shot_{index:03}.png", "")
+        output_path = filename_preset.build_output_path(str(tmp_path), "shot_{index:03}.png", "", _CAPTURED_AT)
         assert output_path == os.path.join(str(tmp_path), "shot_002.png")
 
     def test_returns_existing_path_without_sequence_placeholder(self, tmp_path):
         """{index} / {dup} が無いプリセットでは、同名ファイルがあってもそのパス（上書き）が返ることを検証する"""
         (tmp_path / "AppTitle.png").touch()
 
-        output_path = filename_preset.build_output_path(str(tmp_path), "{title}.png", "AppTitle")
+        output_path = filename_preset.build_output_path(str(tmp_path), "{title}.png", "AppTitle", _CAPTURED_AT)
         assert output_path == os.path.join(str(tmp_path), "AppTitle.png")

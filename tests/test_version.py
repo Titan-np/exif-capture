@@ -1,6 +1,6 @@
 """
 version モジュールの単体テスト
-環境変数、Gitコマンド、およびフォールバックによるバージョン番号解決ロジックを検証する
+環境変数、Gitコマンド、およびフォールバックによるバージョン番号解決ロジックと、タグ名の解析・比較を検証する
 """
 
 import subprocess
@@ -54,3 +54,35 @@ class TestVersionResolution:
         with patch("subprocess.run", side_effect=Exception("Git command failed")):
             resolved_version = version.get_app_version()
             assert resolved_version == version.FALLBACK_VERSION
+
+
+class TestParseVersion:
+    """
+    タグ名の解析（parse_version）と、解析結果による大小比較に関するテストクラス
+    """
+
+    def test_parse_stable_version(self):
+        """正式版のタグ名が、正式版フラグ付きのタプルに変換されることを検証する"""
+        assert version.parse_version("v1.2.3") == (1, 2, 3, 1, 0)
+
+    def test_parse_beta_version(self):
+        """beta版のタグ名が、beta番号付きのタプルに変換されることを検証する"""
+        assert version.parse_version("v1.2.0-beta.4") == (1, 2, 0, 0, 4)
+
+    @pytest.mark.parametrize("invalid_tag", ["1.2.0", "v1.2", "v1.2.0-rc.1", "バージョン番号取得失敗", ""])
+    def test_parse_invalid_version_returns_none(self, invalid_tag):
+        """想定外の形式のタグ名では None が返ることを検証する"""
+        assert version.parse_version(invalid_tag) is None
+
+    @pytest.mark.parametrize(
+        "older_tag, newer_tag",
+        [
+            ("v1.2.0-beta.2", "v1.2.0"),
+            ("v1.2.0-beta.1", "v1.2.0-beta.2"),
+            ("v1.1.3", "v1.2.0-beta.1"),
+            ("v1.9.0", "v1.10.0"),
+        ],
+    )
+    def test_version_ordering(self, older_tag, newer_tag):
+        """beta版は同番号の正式版より古く、番号は数値として比較されることを検証する"""
+        assert version.parse_version(older_tag) < version.parse_version(newer_tag)

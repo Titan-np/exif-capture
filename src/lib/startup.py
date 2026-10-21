@@ -12,7 +12,7 @@ from enum import Enum
 import lib.constants as constants
 import lib.notifier as notifier
 import lib.paths as paths
-import lib.utils as utils
+import lib.windows_shell as windows_shell
 
 # スタートアップフォルダに作成するショートカットのファイル名
 _SHORTCUT_FILE_NAME = f"{constants.APP_NAME}.lnk"
@@ -49,6 +49,7 @@ def _is_disabled_by_windows():
     Returns:
         bool: 無効化されている場合は True。記録が無い・読み取れない場合は False
     """
+    # 1. Windows が記録した、スタートアップ項目の有効・無効の値を読み取る
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _STARTUP_APPROVED_REGISTRY_KEY_PATH) as registry_key:
             approved_value, _ = winreg.QueryValueEx(registry_key, _SHORTCUT_FILE_NAME)
@@ -56,7 +57,7 @@ def _is_disabled_by_windows():
         # 一度も無効化されていない項目は記録自体が無いため、有効とみなす
         return False
 
-    # 値の先頭バイトが奇数（0x03 等）なら無効、偶数（0x02 / 0x06 等）なら有効
+    # 2. 値の先頭バイトが奇数（0x03 等）なら無効、偶数（0x02 / 0x06 等）なら有効
     return bool(approved_value) and approved_value[0] % 2 == 1
 
 
@@ -67,6 +68,7 @@ def get_status():
     Returns:
         StartupStatus: 現在の登録状態
     """
+    # ショートカットの有無を先に見て、ある場合のみ Windows 側の無効化記録を確認する
     if not os.path.exists(_get_shortcut_path()):
         return StartupStatus.UNREGISTERED
     if _is_disabled_by_windows():
@@ -82,11 +84,13 @@ def register():
     Returns:
         bool: 登録に成功した場合は True
     """
+    # 1. 開発時は登録しない
     if not paths.is_executable():
         return False
 
+    # 2. スタートアップフォルダにショートカットを作成する（失敗時はエラー通知）
     try:
-        utils.create_app_shortcut(_get_shortcut_path())
+        windows_shell.create_app_shortcut(_get_shortcut_path())
         notifier.log("スタートアップに登録しました。")
         return True
     except Exception as exception:
@@ -102,9 +106,11 @@ def unregister():
     Returns:
         bool: 解除に成功した場合（既に未登録の場合を含む）は True
     """
+    # 1. 開発時は解除しない
     if not paths.is_executable():
         return False
 
+    # 2. スタートアップフォルダのショートカットを削除する（失敗時はエラー通知）
     try:
         os.remove(_get_shortcut_path())
         notifier.log("スタートアップの登録を解除しました。")
@@ -119,16 +125,19 @@ def unregister():
 
 def refresh_shortcut():
     """
-    登録済みの場合のみショートカットを作り直し、リンク先を現在のexeに合わせる
-    exeを別フォルダへ移動・上書きした場合に、古いパスのまま起動に失敗するのを防ぐため、アプリ起動時に呼び出す
+    登録済みで、リンク先のexeが存在しない場合のみショートカットを作り直し、リンク先を現在のexeに合わせる
+    exeを別フォルダへ移動した場合に、古いパスのまま起動に失敗するのを防ぐため、アプリ起動時に呼び出す
+    リンク先が存在する場合は、別フォルダの exe（安定版とベータ版の併用など）を起動しただけで起動対象が入れ替わらないよう、張り替えない
     """
+    # 1. 開発時はショートカットを登録しないため、更新も行わない
     if not paths.is_executable():
         return
 
+    # 2. 登録済みでリンク先が存在しない場合のみ、現在のexeを指すショートカットで上書きする
     try:
         shortcut_path = _get_shortcut_path()
-        if os.path.exists(shortcut_path):
-            utils.create_app_shortcut(shortcut_path)
+        if os.path.exists(shortcut_path) and not os.path.exists(windows_shell.get_shortcut_target_path(shortcut_path)):
+            windows_shell.create_app_shortcut(shortcut_path)
     except Exception as exception:
         # 起動時の処理のため通知はせず、調査用にログのみ残す
         notifier.log(f"スタートアップのショートカットの更新に失敗しました。\n{exception}")

@@ -15,9 +15,6 @@ if SOURCE_DIRECTORY_PATH not in sys.path:
     # 最優先で検索されるよう先頭に追加
     sys.path.insert(0, SOURCE_DIRECTORY_PATH)
 
-# テスト実行時の副作用（スタートメニューショートカット更新など）を防止するフラグを設定
-os.environ["EXIF_CAPTURE_TESTING"] = "1"
-
 import lib.notifier as notifier
 import lib.settings as settings
 import lib.paths as paths
@@ -62,13 +59,13 @@ def isolated_settings_manager(tmp_path, monkeypatch):
         module: テスト用の独立した設定モジュール (lib.settings)
     """
 
-    # lib.paths.get_app_path の戻り先を一時ディレクトリ配下に変更
-    def mock_get_app_path(relative_path: str = ""):
+    # lib.paths.resolve_app_relative_path の戻り先を一時ディレクトリ配下に変更
+    def mock_resolve_app_relative_path(relative_path: str = ""):
         if relative_path:
             return str(tmp_path / relative_path)
         return str(tmp_path)
 
-    monkeypatch.setattr(paths, "get_app_path", mock_get_app_path)
+    monkeypatch.setattr(paths, "resolve_app_relative_path", mock_resolve_app_relative_path)
 
     # テスト開始前にメモリ上の設定データをクリアし、一時ディレクトリ上で初期ロードを行う
     settings._data.clear()

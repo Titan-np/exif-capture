@@ -80,18 +80,23 @@ def format_output_path(directory: str, filename_preset: str, title: str, timesta
     Raises:
         KeyError, ValueError, IndexError: プリセットの書式が不正な場合
     """
+    # 1. 日時の指定が無い場合は現在時刻を使う
     if timestamp is None:
         timestamp = FormattableTimestamp.now()
+
+    # 2. プリセットのプレースホルダを展開してファイル名を作る（不正な書式はここで例外になる）
     output_filename = filename_preset.format(
         timestamp=timestamp,
         title=title,
         index=sequence_number,
         dup=DuplicateSuffix(sequence_number),
     )
+
+    # 3. 保存先フォルダ（チルダ・環境変数を展開）とつなげてフルパスにする
     return os.path.join(paths.expand_path(directory), output_filename)
 
 
-def build_output_path(directory: str, filename_preset: str, title: str) -> str:
+def build_output_path(directory: str, filename_preset: str, title: str, captured_at: datetime.datetime) -> str:
     """
     撮影時の保存先フルパスを、保存先フォルダ内の既存ファイルと被らない連番で確定する
     プリセットに {index} / {dup} が無く連番でパスが変わらない場合は、既存ファイルがあってもそのパスを返す（上書きとなる）
@@ -100,6 +105,7 @@ def build_output_path(directory: str, filename_preset: str, title: str) -> str:
         directory (str): 保存先フォルダ（チルダや環境変数を含んでもよい）
         filename_preset (str): ファイル名プリセット（例: "{timestamp}_{title}{dup}.png"）
         title (str): {title} に埋め込む文字列（禁止文字は置換済みであること）
+        captured_at (datetime.datetime): {timestamp} に埋め込む撮影日時（EXIF の日時とそろえるため呼び出し元で取得する）
 
     Returns:
         str: 保存先フルパス
@@ -111,8 +117,8 @@ def build_output_path(directory: str, filename_preset: str, title: str) -> str:
     # 連番の上限（無限ループ防止用）
     _MAX_SEQUENCE_NUMBER = 9999
 
-    # 1. 連番ごとに {timestamp} が変わらないよう、日時を1回だけ取得して固定する
-    timestamp = FormattableTimestamp.now()
+    # 1. 撮影日時を、書式指定なしでもデフォルト書式で展開できる FormattableTimestamp に変換する
+    timestamp = FormattableTimestamp.combine(captured_at.date(), captured_at.time())
     first_path = format_output_path(directory, filename_preset, title, timestamp=timestamp)
 
     # 2. 連番を1から増やし、既存ファイルと被らないパスを探す

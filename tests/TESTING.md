@@ -37,21 +37,23 @@ python -m pytest tests/test_paths.py -v
 python -m pytest tests/test_startup.py -v
 python -m pytest tests/test_updater.py -v
 python -m pytest tests/test_version.py -v
+python -m pytest tests/test_windows_shell.py -v
 ```
 
 ## 2.2 テスト観点
 
 | モジュール | テスト観点                                                                         |
 | ---------- | ---------------------------------------------------------------------------------- |
-| settings   | 入力値検証、保存先パス長の検証と警告、上書きの恐れの警告、破損ファイルの自己復旧、旧キー移行（1つの旧キーの分割を含む）、旧デフォルトのプリセット移行、アトミック書き込み |
-| hotkey     | ショートカット文字列の構文解析、仮想キーコード解決、妥当性判定、設定変更時の再登録要否判定 |
-| capture    | 禁止文字置換、同名ファイルの回避、パス長制限、EXIFメタデータ付与、撮影の多重実行防止、通知音の音量変換 |
-| notifier   | 通知の種別ごとの設定に応じたトースト通知の表示有無、種別指定の必須化、起動時のログファイル世代切り替え |
-| startup    | ショートカットの有無とWindows側の無効化記録による登録状態の判定、登録・解除、起動時のショートカット更新、開発時の操作抑止 |
-| updater    | タグ名の解析と大小比較、最新リリースの選択、新しいバージョンの有無の確認、起動時の設定に応じたアップデート確認と通知 |
+| settings   | 入力値検証（型チェック、プリセット展開後の禁止文字を含む）、保存先パス長の検証と警告、上書きの恐れの警告、破損ファイルの自己復旧、旧キー移行（1つの旧キーの分割を含む）、アトミック書き込み |
+| hotkey     | ショートカット文字列の構文解析、仮想キーコード解決（キーボード配列に無い記号の拒否を含む）、登録失敗時のエラーコード取得、妥当性判定、文字入力・標準ショートカットとの衝突判定、設定変更時の再登録要否判定 |
+| capture    | アクティブウィンドウの判定（全画面への切り替え）、禁止文字置換（制御文字を含む）、書式エラー・保存先フォルダ準備失敗時の通知、パス長制限、撮影日時のメタデータ（EXIF・PNG）の付与と無効時の非付与、撮影から保存・通知までの流れ（ファイル名と EXIF の日時の一致）、撮影の多重実行防止、通知音の音量変換と再生失敗時のログ出力 |
+| notifier   | 通知の種別ごとの設定に応じたトースト通知の表示有無、種別指定の必須化、通知のクリック時の処理（渡したリリースページを開くことを含む）、起動時のログファイル世代切り替え |
+| startup    | ショートカットの有無とWindows側の無効化記録による登録状態の判定、登録・解除、起動時のリンク切れショートカットの更新、開発時の操作抑止 |
+| updater    | 公開中の最新リリースと新しいバージョンかの確認（リリースの選択、取得済み一覧の再利用と取得し直し）、設定に応じた確認と通知、リリースページのURLの組み立て |
 | filename_preset | ファイル名プレースホルダ展開（連番・重複時連番を含む）と保存先パスの組み立て、既存ファイルと被らない連番の探索 |
-| paths      | チルダ展開、環境変数展開、アプリパス解決、バージョンに応じたアイコン選択 |
-| version    | 環境変数・git describe・フォールバックによるバージョン解決                         |
+| paths      | チルダ展開、環境変数展開、アプリ基準のパス解決、assets のパス解決、バージョンと実行形態に応じたアイコン選択 |
+| version    | 環境変数・git describe・フォールバックによるバージョン解決、タグ名の解析と大小比較                         |
+| windows_shell | ファイル・フォルダを開く処理の失敗時の扱い（存在しないパス・関連付け無し）、保存先フォルダの準備 |
 
 ## 2.3 テストケース一覧
 
@@ -67,9 +69,14 @@ python -m pytest tests/test_version.py -v
 | test_validate_path_chars_rejects_invalid_colon              | ドライブレター以外のコロンでエラーを返すこと               |
 | test_validate_path_chars_rejects_invalid_drive_format       | 不正なドライブ形式でエラーを返すこと                       |
 | test_validate_path_chars_accepts_valid_paths                | 正常なパス（絶対パス・チルダ・環境変数）で None を返すこと |
+| test_validate_path_chars_accepts_unc_path                   | サーバー名と共有名がそろった UNC パスで None を返すこと    |
+| test_validate_path_chars_rejects_incomplete_unc_path        | 共有名が無い、または共有名にコロンを含む UNC パスでエラーを返すこと |
 | test_validate_filename_chars_rejects_forbidden_chars        | 禁止文字（< > : " / \ \| ? \*）でエラーを返すこと          |
 | test_validate_filename_chars_ignores_placeholder_brackets   | プレースホルダ内の記号を誤検知しないこと                   |
+| test_validate_filename_chars_rejects_forbidden_chars_in_placeholder_output | 書式指定の展開結果（{timestamp:%H:%M} など）に含まれる禁止文字でエラーを返すこと |
 | test_validate_shortcut_format_delegates_to_hotkey_manager   | ショートカット検証が hotkey.Manager へ正しく委譲されること |
+| test_validate_warns_shortcut_conflicting_with_typing        | 文字入力と衝突するショートカットキーで警告を返し、デフォルトのキーでは何も返さないこと |
+| test_validate_warns_shortcut_conflicting_with_standard_shortcut | 他のアプリの標準的なショートカット（Ctrl+C など）で警告を返すこと |
 | test_validate_preset_placeholders_accepts_allowed_keys      | 許可済みキー（timestamp, title, index, dup）で None を返すこと |
 | test_validate_preset_placeholders_rejects_unknown_keys      | 未定義プレースホルダでエラーを返すこと                     |
 | test_validate_preset_placeholders_rejects_unbalanced_braces | 不正な波括弧構文でエラーを返すこと                         |
@@ -79,12 +86,14 @@ python -m pytest tests/test_version.py -v
 | test_default_preset_has_no_validation_result                | デフォルトのファイル名プリセットでエラー・警告が出ないこと |
 | test_validate_all_returns_errors_for_invalid_entries        | 複数項目の一括バリデーションでエラーを正しく集約すること   |
 | test_validate_prefers_error_over_preceding_warning          | 先のルールが警告でも、後のルールのエラーを優先して返すこと |
+| test_validate_type_rejects_mismatched_type                  | 型の異なる値（"50"、True、50.0、"false"、0、数値の文字列項目）でエラーを返すこと |
+| test_can_fail_input_validation_ignores_file_only_rules      | 型チェック・選択肢の確認のみの項目は False、他の検証ルールがある項目は True を返すこと |
 
 #### TestOutputPathLength（保存先パス長検証）
 
 | テストケース                                            | 検証内容                                                                 |
 | ------------------------------------------------------- | ------------------------------------------------------------------------ |
-| test_validate_all_rejects_path_exceeding_max_length     | {title} が空でも最短フルパスが 260 文字になる場合、プリセット側にエラーを返すこと |
+| test_validate_all_warns_path_exceeding_max_length       | {title} が空でも最短フルパスが 260 文字になる場合、プリセット側に警告を返すこと |
 | test_validate_all_accepts_path_within_max_length        | 最短フルパスがちょうど 259 文字の場合はエラーにならず、警告になること     |
 | test_validate_all_uses_expanded_directory_length        | 環境変数を含むフォルダを展開後の長さで判定すること                       |
 | test_validate_all_skips_path_length_check_on_format_error | プリセット書式エラー時はパス長ではなく書式のエラーを返すこと           |
@@ -103,8 +112,8 @@ python -m pytest tests/test_version.py -v
 | test_load_removes_old_key_when_new_key_exists           | 現キーと旧キーが混在する場合、現キーの値を優先し、旧キーがファイルから除去されること |
 | test_load_handles_corrupted_json_and_recovers           | JSON 破損時にバックアップ退避の上デフォルト復旧すること                        |
 | test_load_replaces_invalid_value_with_default           | 不正な設定値がデフォルト値に差し替えられること                                 |
-| test_load_migrates_legacy_default_preset                | 旧デフォルトのファイル名プリセットが現デフォルトへ置き換えて保存されること     |
-| test_load_replaces_preset_when_path_exceeds_max_length  | フォルダとプリセットの組み合わせで最大パス長を超える場合、プリセットがデフォルト値に戻り元ファイルが退避されること |
+| test_load_replaces_mismatched_type_with_default         | 型の異なる設定値がデフォルト値に差し替えられ、元ファイルが退避されること       |
+| test_load_keeps_preset_when_path_exceeds_max_length     | フォルダとプリセットの組み合わせで最大パス長を超えても、両項目が維持され元ファイルが退避されないこと |
 | test_save_atomic_write_creates_valid_json               | save がアトミック書き込みで正しく保存されること                                |
 | test_get_and_set_in_memory                              | メモリ上での get / set が期待通り動作すること                                  |
 
@@ -124,6 +133,8 @@ python -m pytest tests/test_version.py -v
 | test_parse_rejects_modifier_only         | 修飾キー単体（メインキーなし）で None が返ること   |
 | test_parse_rejects_multiple_main_keys    | 複数メインキーで None が返ること                   |
 | test_parse_rejects_unknown_key_name      | 未定義キー名で None が返ること                     |
+| test_parse_symbol_key_uses_keyboard_layout | 記号キーがキーボード配列から取得した仮想キーコードに変換されること |
+| test_parse_rejects_symbol_key_missing_in_keyboard_layout | キーボード配列に無い記号キーで None が返ること |
 
 #### TestIsValidShortcut（ショートカット妥当性検証）
 
@@ -131,6 +142,26 @@ python -m pytest tests/test_version.py -v
 | ------------------------------------------------ | ----------------------------------- |
 | test_is_valid_shortcut_returns_true_for_valid    | 有効な組み合わせで True を返すこと  |
 | test_is_valid_shortcut_returns_false_for_invalid | 無効な組み合わせで False を返すこと |
+
+#### TestConflictsWithTyping（文字入力との衝突判定検証）
+
+| テストケース                                          | 検証内容                                                                       |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------ |
+| test_returns_true_for_typing_keys_without_ctrl_alt_win | 英字・数字・スペースを修飾キーなし・Shift のみで押す組み合わせで True を返すこと |
+| test_returns_false_for_safe_shortcuts                 | Ctrl / Alt / Win を含む組み合わせや、文字入力に使わないキーで False を返すこと |
+
+#### TestConflictsWithStandardShortcut（標準ショートカットとの衝突判定検証）
+
+| テストケース                             | 検証内容                                                                         |
+| ---------------------------------------- | -------------------------------------------------------------------------------- |
+| test_returns_true_for_standard_shortcuts | コピー・貼り付け・終了などの標準的なショートカット（表記揺れを含む）で True を返すこと |
+| test_returns_false_for_other_shortcuts   | 修飾キーが異なる組み合わせ・標準的でないショートカット・不正な形式で False を返すこと |
+
+#### TestRegisterHotkey（ホットキー登録検証）
+
+| テストケース                                          | 検証内容                                                         |
+| ----------------------------------------------------- | ---------------------------------------------------------------- |
+| test_passes_last_error_code_on_registration_failure   | 登録失敗時に Windows のエラーコードが失敗コールバックへ渡されること |
 
 #### TestReloadHotkey（再登録要否判定検証）
 
@@ -142,23 +173,38 @@ python -m pytest tests/test_version.py -v
 
 ### test_capture.py
 
+#### TestGetActiveWindowProperties（アクティブウィンドウ判定検証）
+
+| テストケース                                       | 検証内容                                                             |
+| -------------------------------------------------- | -------------------------------------------------------------------- |
+| test_returns_title_and_rectangle_of_normal_window  | 通常のウィンドウでタイトルと座標（DWM 失敗時は GetWindowRect）を返すこと |
+| test_returns_full_screen_for_empty_title           | タイトルが空のウィンドウで全画面を撮影対象とすること                 |
+| test_returns_full_screen_for_system_window         | タスクバーなどのシステムUIで全画面を撮影対象とすること               |
+| test_returns_full_screen_for_minimized_window      | 幅・高さが0のウィンドウで全画面を撮影対象とすること                  |
+
 #### TestGenerateOutputPath（保存先パス生成検証）
 
 | テストケース                                                | 検証内容                                         |
 | ----------------------------------------------------------- | ------------------------------------------------ |
-| test_generate_output_path_replaces_forbidden_characters     | ウィンドウタイトルの禁止文字が置換されること     |
+| test_generate_output_path_replaces_forbidden_characters     | ウィンドウタイトルの禁止文字（記号・制御文字）が置換されること |
 | test_generate_output_path_formats_timestamp_and_title       | プリセットに基づきパスが正しく組み立てられること |
-| test_generate_output_path_avoids_existing_file              | 同名ファイルがある場合に {dup} の連番付きパスを返すこと |
 | test_generate_output_path_rejects_path_exceeding_max_length | パス長 259 文字超過時に None を返すこと          |
-| test_generate_output_path_handles_format_error              | プリセット書式エラー時に None を返すこと         |
+| test_generate_output_path_handles_format_error              | プリセット書式エラー時に None を返し、原因（例外の内容）をログ用メッセージに含めて通知すること |
+| test_generate_output_path_notifies_when_save_directory_unavailable | 保存先フォルダを準備できない場合に None を返し、撮影失敗を通知すること |
 
 #### TestGenerateExifMetadata（メタデータ生成検証）
 
 | テストケース                                                      | 検証内容                                                     |
 | ----------------------------------------------------------------- | ------------------------------------------------------------ |
-| test_generate_exif_metadata_embeds_modification_time_and_png_info | 更新日時と PNG 作成日時が常時埋め込まれること                |
-| test_generate_exif_metadata_embeds_shooting_time_when_enabled     | メタデータ有効時に撮影日時・デジタル化日時が埋め込まれること |
-| test_generate_exif_metadata_skips_shooting_time_when_disabled     | メタデータ無効時に撮影日時が埋め込まれないこと               |
+| test_generate_exif_metadata_embeds_all_datetime_items_when_enabled | 有効時に EXIF の更新日時・撮影日時・デジタル化日時とタイムゾーン、PNG の作成日時がすべて撮影日時で埋め込まれること |
+| test_generate_exif_metadata_embeds_nothing_when_disabled          | 無効時に日時に関わる EXIF 項目と PNG の作成日時がどれも埋め込まれないこと |
+
+#### TestCaptureScreenshot（撮影から保存・通知までの流れ検証）
+
+| テストケース                                         | 検証内容                                                       |
+| ---------------------------------------------------- | -------------------------------------------------------------- |
+| test_saved_image_has_same_time_in_filename_and_exif  | 保存した画像の EXIF の撮影日時が、ファイル名の日時と一致すること |
+| test_notifies_capture_with_saved_image               | 撮影後に、保存した画像を添えた撮影時の通知を送ること           |
 
 #### TestCaptureLock（多重実行防止検証）
 
@@ -172,6 +218,7 @@ python -m pytest tests/test_version.py -v
 | -------------------------------------- | -------------------------------------------------------- |
 | test_does_not_play_when_volume_is_zero | 音量0%の場合に MCI コマンドを送信しないこと              |
 | test_plays_with_scaled_volume          | 音量50%が MCI の音量500に変換されて再生されること        |
+| test_logs_and_stops_when_mci_command_fails | MCI コマンドがエラーコードを返した場合、ログに残して以降のコマンドを送信しないこと |
 
 ### test_notifier.py
 
@@ -183,6 +230,15 @@ python -m pytest tests/test_version.py -v
 | test_skips_toast_when_category_disabled      | 種別に対応する設定がオフ（False / "disabled"）の場合、トースト通知は送信されずログのみ出力されること |
 | test_other_category_setting_does_not_affect  | 他の種別の設定がオフでも、対象の種別の設定がオンなら送信されること                           |
 | test_category_is_required                    | 種別を指定せずに呼び出すと TypeError になること                                              |
+
+#### TestNotifyClick（通知のクリック時の処理検証）
+
+| テストケース                                     | 検証内容                                                       |
+| ------------------------------------------------ | -------------------------------------------------------------- |
+| test_body_click_opens_image                      | ボタンが無くても、画像付きの通知本体のクリックで画像を開くこと |
+| test_button_click_runs_button_action             | ボタンのクリックで、ボタンに対応する処理を実行すること         |
+| test_release_page_button_opens_given_url         | 「リリースページを開く」のクリックで、通知時に渡したURLを開くこと |
+| test_no_click_handler_without_buttons_and_image  | ボタンも画像も無い通知には、クリック時の処理を渡さないこと     |
 
 #### TestRotateLogFile（ログファイルの世代切り替え検証）
 
@@ -218,44 +274,37 @@ python -m pytest tests/test_version.py -v
 | テストケース                   | 検証内容                                   |
 | ------------------------------ | ------------------------------------------ |
 | test_skips_when_unregistered   | 未登録の場合はショートカットを作成しないこと |
-| test_recreates_when_registered | 登録済みの場合はショートカットを作り直すこと |
+| test_recreates_when_target_missing | 登録済みでリンク先が存在しない（exeを移動した）場合はショートカットを作り直すこと |
+| test_keeps_when_target_exists | 登録済みでリンク先が存在する（別フォルダのexeを起動した）場合はショートカットを作り直さないこと |
 
 ### test_updater.py
 
-#### TestParseVersion（タグ名の解析・比較検証）
+#### TestGetLatestRelease（公開中の最新リリースと新しいバージョンかの確認検証）
 
-| テストケース                              | 検証内容                                                                  |
-| ----------------------------------------- | ------------------------------------------------------------------------- |
-| test_parse_stable_version                 | 正式版のタグ名が正式版フラグ付きのタプルに変換されること                  |
-| test_parse_beta_version                   | beta版のタグ名がbeta番号付きのタプルに変換されること                      |
-| test_parse_invalid_version_returns_none   | 想定外の形式のタグ名（フォールバック文字列を含む）で None が返ること      |
-| test_version_ordering                     | beta版は同番号の正式版より古く、各番号が数値として比較されること          |
+| テストケース                                                | 検証内容                                                                       |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| test_returns_newer_prerelease_only_when_included            | Pre-releaseを含めると新しいbeta版、含めないと実行中と同じ正式版（新しくない）が返ること |
+| test_selects_by_version_not_by_list_order                   | 一覧の並び順ではなく、バージョン番号を数値として比べて最大のものを返すこと     |
+| test_excludes_draft_and_unparsable_tags                     | 下書きのリリースと、形式を解析できないタグが選択対象外になること               |
+| test_returns_none_when_no_release                           | リリースが1件も無い場合に None を返すこと                                      |
+| test_reuses_fetched_releases                                | 2回目以降は確認範囲を変えても取得済みの一覧から選び直し、取得し直さないこと     |
+| test_refetches_when_requested                               | refetch=True の場合は、取得済みでもリリース一覧を取得し直すこと                |
+| test_raises_without_fetch_when_current_version_unparsable   | 現在のバージョンを解析できない場合、取得せずに ValueError を送出すること       |
 
-#### TestFindLatestRelease（最新リリースの選択検証）
-
-| テストケース                                | 検証内容                                                   |
-| ------------------------------------------- | ---------------------------------------------------------- |
-| test_excludes_prerelease_when_not_included  | Pre-releaseを含めない場合、正式版の中で最大のものが選ばれること |
-| test_includes_prerelease_when_included      | Pre-releaseを含める場合、beta版も選択対象になること        |
-| test_excludes_draft                         | 下書きのリリースが選択対象外になること                     |
-| test_returns_none_when_no_candidate         | 対象となるリリースが無い場合に None が返ること             |
-
-#### TestGetNewerReleaseTag（新しいバージョンの有無の確認検証）
-
-| テストケース                                            | 検証内容                                                                 |
-| ------------------------------------------------------- | ------------------------------------------------------------------------ |
-| test_returns_newer_prerelease_only_when_included        | 新しいbeta版は、Pre-releaseを対象に含めた場合のみ返ること                |
-| test_raises_on_fetch_failure                            | リリース一覧の取得に失敗した場合、例外がそのまま送出されること           |
-| test_raises_without_fetch_when_current_version_unparsable | 現在のバージョンを解析できない場合、リリース一覧を取得せずに ValueError を送出すること |
-
-#### TestCheckForUpdate（起動時のアップデート確認と通知検証）
+#### TestNotifyUpdate（設定に応じた確認と通知検証）
 
 | テストケース                                 | 検証内容                                                                         |
 | -------------------------------------------- | -------------------------------------------------------------------------------- |
-| test_notifies_when_newer_prerelease_exists   | 新しいbeta版がある場合、リリースページボタン付き・アップデート種別で通知されること |
-| test_does_not_notify_when_up_to_date         | 最新版を使用している場合、通知されないこと                                       |
+| test_notifies_when_newer_prerelease_exists   | 指定秒数待ってから、新しいbeta版のリリースページを開くボタン付き・アップデート種別で通知されること |
+| test_does_not_notify_when_up_to_date         | 新しいバージョンが無い場合、通知されないこと                                     |
 | test_skips_fetch_when_disabled               | 「確認しない」設定では、リリース一覧を取得しないこと                             |
 | test_fetch_failure_logs_without_notification | 取得失敗時、通知せずログ出力のみ行うこと                                         |
+
+#### TestGetReleasePageUrl（リリースページのURL検証）
+
+| テストケース                       | 検証内容                                                 |
+| ---------------------------------- | -------------------------------------------------------- |
+| test_returns_page_of_specified_tag | 一覧ではなく、指定したタグのリリースページのURLを返すこと |
 
 ### test_filename_preset.py
 
@@ -288,6 +337,7 @@ python -m pytest tests/test_version.py -v
 | テストケース                                          | 検証内容                                                             |
 | ----------------------------------------------------- | -------------------------------------------------------------------- |
 | test_returns_first_path_when_not_exists               | 同名ファイルが無い場合は連番なしのパスを返すこと                     |
+| test_uses_captured_at_for_timestamp                   | {timestamp} に引数の撮影日時がデフォルト書式で埋め込まれること       |
 | test_skips_existing_files                             | 同名ファイルがある場合は空いている連番のパスを返すこと               |
 | test_skips_existing_files_with_index                  | {index} でも既存ファイルと被らない番号を返すこと                     |
 | test_returns_existing_path_without_sequence_placeholder | {index} / {dup} が無い場合は同名ファイルがあってもそのパスを返すこと |
@@ -304,18 +354,19 @@ python -m pytest tests/test_version.py -v
 
 #### TestAppPaths（パス解決検証）
 
-| テストケース                                   | 検証内容                                       |
-| ---------------------------------------------- | ---------------------------------------------- |
-| test_get_app_path_in_development_environment   | 開発環境でリポジトリルート基準のパスを返すこと |
-| test_get_asset_path_in_development_environment | 開発環境で assets フォルダ配下のパスを返すこと |
-| test_get_app_icon_path_in_development_environment | 開発環境で開発用アイコン（icon_dev.ico）のパスを返すこと |
+| テストケース                                               | 検証内容                                       |
+| ---------------------------------------------------------- | ---------------------------------------------- |
+| test_resolve_app_relative_path_in_development_environment | 開発環境でリポジトリルート基準のパスを返すこと |
+| test_resolve_asset_path_in_development_environment        | 開発環境で assets フォルダ配下のパスを返すこと |
 
-#### TestIconFilename（アイコン選択検証）
+#### TestIconPath（アイコン選択検証）
 
-| テストケース                           | 検証内容                                  |
-| -------------------------------------- | ----------------------------------------- |
-| test_stable_version_uses_default_icon  | 正式版のタグ名で icon.ico が選ばれること  |
-| test_beta_version_uses_beta_icon       | beta版のタグ名で icon_beta.ico が選ばれること |
+| テストケース                           | 検証内容                                                   |
+| -------------------------------------- | ---------------------------------------------------------- |
+| test_development_uses_dev_icon         | 開発時はバージョンに関わらず icon_dev.ico が選ばれること   |
+| test_stable_version_uses_default_icon  | 正式版のタグ名で icon.ico が選ばれること                   |
+| test_beta_version_uses_beta_icon       | beta版のタグ名で icon_beta.ico が選ばれること              |
+| test_icon_files_exist_in_assets        | 選ばれうるアイコンファイルがすべて assets に存在すること   |
 
 ### test_version.py
 
@@ -328,6 +379,33 @@ python -m pytest tests/test_version.py -v
 | test_get_app_version_from_git_describe                | git describe の出力から取得できること           |
 | test_get_app_version_fallback                         | 全手段失敗時にフォールバック文字列を返すこと    |
 
+#### TestParseVersion（タグ名の解析・比較検証）
+
+| テストケース                              | 検証内容                                                                  |
+| ----------------------------------------- | ------------------------------------------------------------------------- |
+| test_parse_stable_version                 | 正式版のタグ名が正式版フラグ付きのタプルに変換されること                  |
+| test_parse_beta_version                   | beta版のタグ名がbeta番号付きのタプルに変換されること                      |
+| test_parse_invalid_version_returns_none   | 想定外の形式のタグ名（フォールバック文字列を含む）で None が返ること      |
+| test_version_ordering                     | beta版は同番号の正式版より古く、各番号が数値として比較されること          |
+
+### test_windows_shell.py
+
+#### TestSafeOpenPath（ファイル・フォルダを開く処理検証）
+
+| テストケース                          | 検証内容                                                               |
+| ------------------------------------- | ---------------------------------------------------------------------- |
+| test_opens_existing_path              | 存在するパスを既定アプリで開き True を返すこと                         |
+| test_notifies_error_for_missing_path  | 存在しないパスは開かずに False を返し、エラー通知すること              |
+| test_notifies_missing_association     | 関連付けアプリが無い（エラーコード 1155）場合にその旨を通知すること    |
+
+#### TestEnsureSaveDirectory（保存先フォルダの準備検証）
+
+| テストケース                                       | 検証内容                                             |
+| -------------------------------------------------- | ---------------------------------------------------- |
+| test_creates_missing_directory                     | 存在しない保存先フォルダを作成し、そのパスを返すこと |
+| test_returns_none_when_directory_not_configured    | 保存先フォルダが未設定の場合に None を返すこと       |
+| test_returns_none_when_directory_cannot_be_created | 保存先フォルダを作成できない場合に None を返すこと   |
+
 # 3. 手動テスト
 
 pytest による自動テストでは検証できない範囲について、手動テストを行う。
@@ -338,10 +416,10 @@ pytest による自動テストでは検証できない範囲について、手�
 
 | 対象領域                       | テスト観点                                                                     | 手動実施の理由                                                           |
 | ------------------------------ | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
-| main.pyw（アプリ起動・終了）   | 起動通知、トレイメニュー、終了処理                                             | トレイ常駐・スレッド管理の統合処理があり、pytestでの試験が困難なため     |
-| capture.py（キャプチャ統合）   | ホットキー押下→撮影→保存→通知の一連フロー、全画面キャプチャ                   | 実際の画面描画（GDI / DWM / ImageGrab）を伴うため                        |
-| notifier.py（通知）            | トースト通知のボタンアクション、閉じ方による影響、エラー通知                   | OSネイティブ機能の確認を要し、pytestでは送信処理をモック化しているため   |
-| settings_window.py（設定画面） | タブ表示、タブをまたいだ保存、テスト再生、バリデーション表示と解除、キー記録とキャンセル | GUIアプリケーションのため                                                |
+| main.pyw（アプリ起動・終了）   | 起動通知、トレイメニュー、終了処理（終了後に撮影されないこと）                                             | トレイ常駐・スレッド管理の統合処理があり、pytestでの試験が困難なため     |
+| capture.py（キャプチャ統合）   | ホットキー押下→撮影→保存→通知の一連フロー、全画面キャプチャ、ネットワーク共有への保存、撮影日時の埋め込みのオン・オフ（エクスプローラーでの表示） | 実際の画面描画（GDI / DWM / ImageGrab）を伴うため                        |
+| notifier.py（通知）            | トースト通知のボタンアクション、閉じ方による影響                               | OSネイティブ機能の確認を要し、pytestでは送信処理をモック化しているため   |
+| settings_window.py（設定画面） | タブ表示、タブをまたいだ保存、テスト再生、バリデーション表示と解除、キー記録とキャンセル、入力エラー時・キー記録中の保存抑止、警告の表示、バージョン情報の表示とリンク | GUIアプリケーションのため                                                |
 | hotkey.py（ホットキー登録）    | 競合時のエラー通知、設定変更時の再登録                                         | Windowsのメッセージループ上で動作し、OSネイティブ機能の確認を要するため  |
 | updater.py（アップデート確認） | GitHub Releasesからの取得、リリースページを開くボタン、設定画面の今すぐ確認ボタン | 実際のGitHub APIとの通信を伴い、pytestでは取得処理をモック化しているため |
 | startup.py（スタートアップ）   | 設定画面からの登録・解除、Windows側で無効化した状態の表示、サインイン時の自動起動 | スタートアップフォルダ・タスクマネージャー・サインインといったOSの機能を使い、exeのビルドも要するため |
@@ -357,69 +435,82 @@ pytest による自動テストでは検証できない範囲について、手�
 | ---- | -------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
 | M-01 | 起動通知       | `python src/main.pyw` で起動する                                       | バージョン番号付きの起動通知が表示される                                                   |
 | M-02 | トレイメニュー | トレイアイコンを右クリックする                                         | 「設定を開く」「保存先フォルダを開く」「ログファイルを開く」「終了」の4項目が表示される     |
-| M-03 | 開発時アイコン | トレイメニュー→「設定を開く」で設定画面を開く                         | トレイと設定画面に icon_dev.ico のアイコンが表示される                                     |
+| M-03 | 開発時のトレイアイコン | `python src/main.pyw` で起動し、タスクバー右下の通知領域を確認する | 通知領域に icon_dev.ico のアイコンが表示される |
+| M-04 | 開発時の設定画面アイコン | トレイメニュー→「設定を開く」で設定画面を開く | 設定画面のタイトルバーに icon_dev.ico のアイコンが表示される |
 
 ### キャプチャ（capture.py）
 
 | #    | テストケース         | 手順                                                                                                                                  | 期待結果                                              |
 | ---- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| M-04 | ウィンドウキャプチャ | メモ帳を最前面にしてショートカットキー（既定: Shift+PrintScreen）を押し、表示された通知の「キャプチャした画像を開く」を押す          | メモ帳のウィンドウが写った画像が既定アプリで開かれる  |
-| M-05 | EXIF メタデータ      | 「保存」タブで「撮影日時のEXIFメタデータを埋め込む」を有効にしてキャプチャする。保存されたPNGを右クリック→プロパティ→詳細タブを開く | 「撮影日時」に撮影時刻が記録されている                |
-| M-06 | 全画面キャプチャ     | デスクトップの何もない場所をクリックし、全ウィンドウを非アクティブにした状態でショートカットキーを押す                                | 保存先フォルダに「FullScreen」を含むPNGが作成される   |
+| M-05 | ウィンドウキャプチャ | メモ帳を最前面にしてショートカットキー（既定: Shift+PrintScreen）を押し、表示された通知の「キャプチャした画像を開く」を押す          | メモ帳のウィンドウが写った画像が既定アプリで開かれる  |
+| M-06 | 撮影日時の埋め込み | 「保存」タブで「撮影日時をメタデータ（EXIF / PNG）に埋め込む」をオンにしてキャプチャする。保存されたPNGを右クリック→プロパティ→詳細タブを開く | 「撮影日時」の欄に日時が表示されている（値がファイル名の日時と一致することは pytest の test_saved_image_has_same_time_in_filename_and_exif で検証） |
+| M-07 | 撮影日時の非埋め込み | M-06 のスイッチをオフにして「保存」を押してからキャプチャし、保存されたPNGのプロパティ→詳細タブを開く | 「撮影日時」の欄が空欄になっている |
+| M-08 | 全画面キャプチャ     | デスクトップの何もない場所をクリックし、全ウィンドウを非アクティブにした状態でショートカットキーを押す                                | 保存先フォルダに「FullScreen」を含むPNGが作成される   |
+| M-09 | ネットワーク共有への保存 | 共有フォルダを用意し、「保存」タブの保存先フォルダに UNC パス（例: `\\localhost\共有名`）を指定して「保存」を押した後、キャプチャする | 共有フォルダに PNG が作成される |
 
 ### 通知（notifier.py）
 
 | #    | テストケース | 手順                                                                                       | 期待結果                                                                                         |
 | ---- | ------------ | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
-| M-07 | 通知の閉じ方 | キャプチャを2回行い、1回目の通知は×で閉じ、2回目の通知は放置して消えるのを待つ             | コンソールにエラー（Event loop is closed 等）や閉じた理由の出力（ToastDismissalReason）が出ない |
-| M-08 | エラー通知   | 保存先フォルダを存在しないドライブ（例: `Z:\Screenshots`）にしてキャプチャする             | 「撮影に失敗しました。」の通知が表示される                                                       |
+| M-10 | 通知の閉じ方 | キャプチャを2回行い、1回目の通知は×で閉じ、2回目の通知は放置して消えるのを待つ             | コンソールにエラー（Event loop is closed 等）や閉じた理由の出力（ToastDismissalReason）が出ない |
 
 ### 設定画面（settings_window.py）
 
 | #    | テストケース               | 手順                                                                                                                                 | 期待結果                                                                                         |
 | ---- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
-| M-09 | タブの表示                 | 「撮影」「保存」「Windows機能」「アップデート」タブを順に選択する                                                                                           | 各タブの項目が見切れずに表示され、選択中のタブがアクセントカラーで強調される                     |
-| M-10 | タブをまたいだ保存         | 「撮影」タブで音量を変更し、「保存」タブの「参照...」で保存先フォルダを選び、「保存」を押す                                         | settings.json に音量と保存先フォルダの両方の変更が反映されている                                 |
-| M-11 | テスト再生                 | 「撮影」タブで音量を「50%」にして「テスト再生」を押す                                                                               | 通知音が鳴る                                                                                     |
-| M-12 | バリデーションエラー表示   | 「保存」タブの保存先フォルダの入力欄に禁止文字（例: `C:\Save<here`）を入力し、「Windows機能」タブに切り替える                             | ボタンの上に「「保存」タブに入力エラーがあります。」と表示され、「適用」「保存」ボタンが押せない |
-| M-13 | バリデーションエラーの解除 | M-12 の状態から「保存」タブに戻り、入力を元に戻す                                                                                    | エラー表示が消え、「適用」「保存」ボタンが押せるようになる                                       |
-| M-14 | ショートカットキー記録     | 「撮影」タブで「キーを記録」ボタンを押し、Ctrl+Shift+S を押す                                                                       | 入力欄に「ctrl+shift+s」が反映される                                                             |
-| M-15 | キー記録のキャンセル       | M-14 の後、もう一度「キーを記録」ボタンを押し、Esc を押す                                                                           | 入力欄が「ctrl+shift+s」（記録前の値）に戻る                                                     |
+| M-11 | タブの表示                 | 「撮影」「保存」「Windows機能」「バージョン情報」タブを順に選択する                                                                    | 各タブの項目が見切れずに表示される                                                               |
+| M-12 | 選択中のタブの強調         | M-11 の後、選択中のタブを確認する                                                                                                    | 選択中のタブだけがアクセントカラーで強調されている                                               |
+| M-13 | タブをまたいだ保存         | 「撮影」タブで音量を変更し、「保存」タブの「参照...」で保存先フォルダを選び、「保存」を押す                                         | settings.json に音量と保存先フォルダの両方の変更が反映されている                                 |
+| M-14 | テスト再生                 | 「撮影」タブで音量を「50%」にして「テスト再生」を押す                                                                               | 通知音が鳴る                                                                                     |
+| M-15 | 入力エラーのタブ案内       | 「保存」タブの保存先フォルダの入力欄に禁止文字（例: `C:\Save<here`）を入力し、「Windows機能」タブに切り替える                     | ボタンの上に「「保存」タブに入力エラーがあります。」と表示される                                 |
+| M-16 | 入力エラー時の保存抑止     | M-15 の状態で「適用」「保存」ボタンを押す                                                                                            | どちらのボタンも押せない                                                                         |
+| M-17 | 入力エラーの解除           | M-15 の状態から「保存」タブに戻り、入力を元に戻してから「Windows機能」タブに切り替える                                               | 「適用」「保存」ボタンが押せるようになる                                                         |
+| M-18 | ショートカットキー記録     | 「撮影」タブで「キーを記録」ボタンを押し、Ctrl+Shift+S を押す                                                                       | 入力欄に「ctrl+shift+s」が反映される                                                             |
+| M-19 | キー記録中の保存抑止       | M-18 の後、もう一度「キーを記録」ボタンを押し、キーは押さずに「適用」「保存」ボタンを押す                                           | どちらのボタンも押せない                                                                         |
+| M-20 | キー記録のキャンセル       | M-19 の状態で Esc を押す                                                                                                             | 入力欄が「ctrl+shift+s」（記録前の値）に戻る                                                     |
+| M-21 | 文字入力と衝突するキーの警告 | 「撮影」タブで「キーを記録」ボタンを押し、A キーのみを押す                                                                     | 入力欄の下に「すべてのアプリでこのキーを入力できなくなります。」がオレンジ色で表示される         |
 
 ### ホットキー登録（hotkey.py）
 
 | #    | テストケース     | 手順                                                                                                         | 期待結果                                                     |
 | ---- | ---------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------ |
-| M-16 | ホットキー競合   | settings.json の capture.triggerShortcut を「ctrl+c」など他アプリが使用しているキーに直接書き換えて起動する | 「ショートカットキーの登録に失敗しました」の通知が表示される |
-| M-17 | ホットキー再登録 | M-16 の状態から設定画面でショートカットキーを「Shift+PrintScreen」に変更して「適用」を押し、そのキーを押す  | キャプチャが実行され、保存先フォルダにPNGが作成される        |
+| M-22 | ホットキー競合 | `python tools/build.py` で生成した exe を起動した状態で、同じショートカットキー（既定: Shift+PrintScreen）のまま `python src/main.pyw` を起動する | 後から起動した側で「ショートカットキーの登録に失敗しました」の通知が表示される |
+| M-23 | ホットキー再登録 | M-22 の後、後から起動した側の設定画面でショートカットキーを Ctrl+Shift+S に変更して「適用」を押し、Ctrl+Shift+S を押す | キャプチャが実行され、保存先フォルダにPNGが作成される |
 
 ### アップデート確認（updater.py）
 
 | #    | テストケース     | 手順                                                                                                                                                                                                     | 期待結果                                  |
 | ---- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
-| M-18 | アップデート通知 | アップデートの確認を「正式版のみ確認する」にし、`EXIF_CAPTURE_VERSION=v1.0.0 python src/main.pyw` で起動する（bash の場合）。数十秒後に表示される新バージョンの通知の「リリースページを開く」を押す | ブラウザで GitHub Releases のページが開く |
-| M-19 | 今すぐ確認（新版あり） | `EXIF_CAPTURE_VERSION=v1.0.0 python src/settings_window.py` で設定画面を開き（bash の場合）、「アップデート」タブで「今すぐ確認」を押した後、「リリースページを開く」を押す | ブラウザで GitHub Releases のページが開く |
-| M-20 | 今すぐ確認（失敗） | ネットワークを切断した状態で、M-19 と同様に「今すぐ確認」を押す | 「確認に失敗しました。(詳細はログを参照)」と赤字で表示される |
+| M-24 | アップデート通知 | アップデートの確認を「正式版のみ確認する」にし、`EXIF_CAPTURE_VERSION=v1.0.0 python src/main.pyw` で起動する（bash の場合）。数十秒後に表示される新バージョンの通知の「リリースページを開く」を押す | ブラウザで、通知に表示されたバージョンのリリースページが開く |
+| M-25 | 今すぐ確認（新版あり） | `EXIF_CAPTURE_VERSION=v1.0.0 python src/settings_window.py` で設定画面を開き（bash の場合）、「バージョン情報」タブで「今すぐ確認」を押した後、「リリースページを開く」を押す | ブラウザで、画面に表示されたバージョンのリリースページが開く |
+| M-26 | 確認範囲の切り替え | M-25 で「今すぐ確認」を押した後（「正式版のみ確認する」の状態）、ドロップダウンを「ベータ版も確認する」に切り替える | 「今すぐ確認」を押し直さずに、ベータ版を含めた最新バージョンの表示に切り替わる |
+| M-27 | 確認後のバージョン表示 | M-25 で「今すぐ確認」を押した後、「このアプリについて」を確認する | 「バージョン: v1.0.0」（起動したバージョン）が表示されている |
+| M-28 | GitHub のリンク | 「バージョン情報」タブの「このアプリについて」で、GitHub のリンクを押す | ブラウザでリポジトリのページが開く |
+| M-29 | 今すぐ確認（新版なし） | 公開中の最新版と同じバージョンのまま `python src/settings_window.py` で設定画面を開き、「バージョン情報」タブで「今すぐ確認」を押す | 「新しいバージョンはありません。（最新: (公開中の最新版のタグ名)）」と表示される |
+| M-30 | 今すぐ確認（失敗） | ネットワークを切断した状態で、M-25 と同様に「今すぐ確認」を押す | 「確認に失敗しました。(詳細はログを参照)」と赤字で表示される |
 
 ### アプリ終了（main.pyw）
 
 | #    | テストケース | 手順                                        | 期待結果                                                       |
 | ---- | ------------ | ------------------------------------------- | -------------------------------------------------------------- |
-| M-21 | アプリ終了   | トレイアイコン右クリック→「終了」を選択する | 「終了します。」の通知が表示され、通知領域からアイコンが消える |
+| M-31 | 終了通知     | トレイアイコン右クリック→「終了」を選択する | 「終了します。」の通知が表示される                             |
+| M-32 | アプリの終了 | M-31 の後、ショートカットキーを押す | 撮影されない（保存先フォルダに PNG が増えない） |
 
 ### exe 版のアイコン
 
 | #    | テストケース             | 手順                                                                                                                                                   | 期待結果                                                                   |
 | ---- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------- |
-| M-22 | exe 実行中のアイコン     | `EXIF_CAPTURE_VERSION=v1.2.0-beta.1 python tools/build.py` を実行し、生成された exe を起動して設定画面を開く（bash の場合）                            | トレイと設定画面に icon_beta.ico のアイコンが表示される                    |
-| M-23 | exe 終了後のアイコン     | M-22 の exe でキャプチャを1回行ってから終了し、スタートメニューの「EXIF Capture」を確認する                                                            | icon_beta.ico のアイコンが表示されている（汎用アイコンや空白にならない）   |
+| M-33 | exe 実行中のトレイアイコン | `EXIF_CAPTURE_VERSION=v1.2.0-beta.1 python tools/build.py` を実行し、生成された exe を起動してタスクバー右下の通知領域を確認する（bash の場合） | 通知領域に icon_beta.ico のアイコンが表示される |
+| M-34 | exe 実行中の設定画面アイコン | M-33 の exe で設定画面を開く | 設定画面のタイトルバーに icon_beta.ico のアイコンが表示される |
+| M-35 | exe 終了後のアイコン     | M-33 の exe でキャプチャを1回行ってから終了し、スタートメニューの「EXIF Capture」を確認する                                                            | icon_beta.ico のアイコンが表示されている（汎用アイコンや空白にならない）   |
 
 ### スタートアップ（startup.py）
 
 | #    | テストケース             | 手順                                                                                                                       | 期待結果                                                                 |
 | ---- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| M-24 | 開発時の操作抑止         | `python src/main.pyw` で起動し、設定画面の「Windows機能」タブを開く                                                               | 「exe実行時のみ設定できます。」と表示され、ボタンが押せない              |
-| M-25 | スタートアップへの登録   | `python tools/build.py` で生成した exe を起動し、設定画面の「Windows機能」タブで「登録する」を押す                                | `shell:startup` のフォルダに「EXIF Capture.lnk」が作成される             |
-| M-26 | Windows側で無効化した表示 | M-25 の後、タスクマネージャーの「スタートアップ アプリ」で EXIF Capture を無効にし、設定画面を開き直す                     | 「Windowsの設定で無効になっています」と表示される                        |
-| M-27 | サインイン時の自動起動   | M-26 の項目をタスクマネージャーで有効に戻し、サインアウトしてからサインインする                                            | アプリが自動で起動し、起動通知が表示される                               |
-| M-28 | スタートアップの登録解除 | M-27 の後、設定画面の「Windows機能」タブで「解除する」を押す                                                                       | `shell:startup` のフォルダから「EXIF Capture.lnk」が削除され、「登録されていません」と表示される |
+| M-36 | 開発時の状態表示 | `python src/main.pyw` で起動し、設定画面の「Windows機能」タブを開く | 自動起動の欄に「exe実行時のみ設定できます。」と表示される |
+| M-37 | 開発時の操作抑止 | M-36 の状態で「登録する」ボタンを押す | ボタンが押せない |
+| M-38 | スタートアップへの登録   | `python tools/build.py` で生成した exe を起動し、設定画面の「Windows機能」タブで「登録する」を押す                                | `shell:startup` のフォルダに「EXIF Capture.lnk」が作成される             |
+| M-39 | Windows側で無効化した表示 | M-38 の後、タスクマネージャーの「スタートアップ アプリ」で EXIF Capture を無効にし、設定画面を開き直す                     | 「Windowsの設定で無効になっています」と表示される                        |
+| M-40 | サインイン時の自動起動 | M-39 の項目をタスクマネージャーで有効に戻し、サインアウトしてからサインインする | 起動通知が表示される |
+| M-41 | スタートアップの登録解除 | M-40 の後、設定画面の「Windows機能」タブで「解除する」を押す                                                                       | 「登録されていません」と表示される（ショートカットの削除は pytest の test_unregister_removes_shortcut で検証） |

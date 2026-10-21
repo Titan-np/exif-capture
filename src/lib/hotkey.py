@@ -7,7 +7,9 @@ import keyboard
 import lib.notifier as notifier
 
 # Windows API（User32, Kernel32）の呼び出し用インスタンス
-user32 = ctypes.windll.user32
+# User32 は登録失敗時のエラーコードを ctypes.get_last_error() で取得するため、use_last_error を有効にして読み込む
+# （後から GetLastError() を呼ぶと、間に挟まる ctypes 内部の処理でエラーコードが上書きされる場合があるため）
+user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.windll.kernel32
 
 
@@ -113,19 +115,20 @@ class Manager:
         Returns:
             tuple: (修飾キーフラグ, 仮想キーコード) のタプル。形式不正時は (None, None)。
         """
+        # 1. 文字列でない・空の場合は不正な形式とする
         if not shortcut_string or not isinstance(shortcut_string, str):
             return None, None
 
-        # '+' 区切りで分解し、小文字化および前後の空白文字を除去
+        # 2. '+' 区切りで分解し、小文字化および前後の空白文字を除去
         key_parts = [part.strip().lower() for part in shortcut_string.split("+") if part.strip()]
         if not key_parts:
             return None, None
 
-        # 末尾が '+' で終わる入力途中の文字列（例: 'ctrl+'）は無効として除外
+        # 3. 末尾が '+' で終わる入力途中の文字列（例: 'ctrl+'）は無効として除外
         if shortcut_string.strip().endswith("+"):
             return None, None
 
-        # キー長押し時の連続発火を防ぐフラグを初期設定
+        # 4. キー長押し時の連続発火を防ぐフラグを初期設定し、各キーを修飾キーとメインキーに振り分ける
         modifiers = cls._MOD_NOREPEAT
         virtual_key_code = None
         non_modifier_count = 0
@@ -151,16 +154,16 @@ class Manager:
                         virtual_key_code = ord(character)
                     else:
                         # 記号文字の場合は VkKeyScanW API を用いて現在のキーボード配列から仮想キーコードを取得
+                        # 取得できない（現在の配列に無い）記号は、文字コードを代わりに使うと別のキーが登録されてしまうため不正な形式とする
                         scanned_code = user32.VkKeyScanW(ord(part)) & 0xFF
-                        if scanned_code != 0xFF:
-                            virtual_key_code = scanned_code
-                        else:
-                            virtual_key_code = ord(character)
+                        if scanned_code == 0xFF:
+                            return None, None
+                        virtual_key_code = scanned_code
                 else:
                     # 未定義のキー名が含まれている場合は不正な形式として処理中断
                     return None, None
 
-        # メインキーが1つだけ存在し、正常に仮想キーコードが取得できた場合のみ有効
+        # 5. メインキーが1つだけ存在し、正常に仮想キーコードが取得できた場合のみ有効
         if non_modifier_count != 1 or virtual_key_code is None:
             return None, None
 
@@ -183,6 +186,54 @@ class Manager:
         modifiers, virtual_key_code = cls._parse_shortcut_string(shortcut_string)
         return modifiers is not None and virtual_key_code is not None
 
+    @classmethod
+    def conflicts_with_typing(cls, shortcut_string):
+        """
+        指定された文字列が、文字入力に使うキーを Ctrl / Alt / Win なしで押す組み合わせかを判定する
+        登録するとOS全体でそのキー入力が横取りされ、すべてのアプリで入力できなくなるため、設定時の警告に使う
+
+        Args:
+            shortcut_string (str): 判定対象のショートカットキー文字列。
+
+        Returns:
+            bool: 文字入力と衝突する場合は True。形式が不正な場合や衝突しない場合は False。
+        """
+        # 1. ショートカット文字列を解析する（形式が不正な場合は衝突しないとみなす）
+        modifiers, virtual_key_code = cls._parse_shortcut_string(shortcut_string)
+        if virtual_key_code is None:
+            return False
+
+        # 2. Ctrl / Alt / Win のいずれかを含む組み合わせは文字入力に使われない（Shift のみは大文字・記号の入力に使われる）
+        if modifiers & (cls._MOD_CONTROL | cls._MOD_ALT | cls._MOD_WIN):
+            return False
+
+        # 3. 数字（0x30〜0x39）・英字（0x41〜0x5A）・記号（OEMキー 0xBA〜0xE2）・スペース（0x20）は文字入力に使われる
+        return 0x30 <= virtual_key_code <= 0x39 or 0x41 <= virtual_key_code <= 0x5A or 0xBA <= virtual_key_code <= 0xE2 or virtual_key_code == 0x20
+
+    @classmethod
+    def conflicts_with_standard_shortcut(cls, shortcut_string):
+        """
+        指定された文字列が、他のアプリで標準的に使われるショートカット（コピーなど）と同じ組み合わせかを判定する
+        アプリ内で処理されるショートカットは OS 全体のホットキーとして登録されていないため登録に成功してしまい、
+        すべてのアプリでその操作が使えなくなる。設定時の警告に使う
+
+        Args:
+            shortcut_string (str): 判定対象のショートカットキー文字列。
+
+        Returns:
+            bool: 標準的なショートカットと同じ組み合わせの場合は True。形式が不正な場合や異なる場合は False。
+        """
+        # 他のアプリで標準的に使われるショートカット（全選択・コピー・貼り付け・切り取り・元に戻す・やり直し・保存・検索・印刷・新規・開く・閉じる・終了）
+        STANDARD_SHORTCUTS = ("ctrl+a", "ctrl+c", "ctrl+v", "ctrl+x", "ctrl+z", "ctrl+y", "ctrl+s", "ctrl+f", "ctrl+p", "ctrl+n", "ctrl+o", "ctrl+w", "alt+f4")
+
+        # 1. ショートカット文字列を解析する（形式が不正な場合は衝突しないとみなす）
+        key_combination = cls._parse_shortcut_string(shortcut_string)
+        if key_combination[1] is None:
+            return False
+
+        # 2. 表記揺れ（例: "Ctrl+C" と "control+c"）を同一とみなすため、解析結果どうしで比較する
+        return any(cls._parse_shortcut_string(standard_shortcut) == key_combination for standard_shortcut in STANDARD_SHORTCUTS)
+
     def _register_hotkey(self, shortcut_string):
         """
         Windows API (RegisterHotKey) を呼び出し、システムにグローバルホットキーを登録する。
@@ -193,6 +244,7 @@ class Manager:
         Returns:
             bool: 登録に成功した場合は True、失敗した場合は False。
         """
+        # 1. ショートカット文字列を解析し、形式が不正な場合は登録せずに失敗とする
         modifiers, virtual_key_code = self._parse_shortcut_string(shortcut_string)
         if modifiers is None or virtual_key_code is None:
             notifier.log(f"無効なショートカット形式です: '{shortcut_string}'")
@@ -201,7 +253,7 @@ class Manager:
                 self._on_registration_failure(shortcut_string, 0)
             return False
 
-        # Windows API を呼び出してスレッドにグローバルホットキーを紐付け登録
+        # 2. Windows API を呼び出してスレッドにグローバルホットキーを紐付け登録
         success = user32.RegisterHotKey(None, self._HOTKEY_IDENTIFIER, modifiers, virtual_key_code)
 
         if success:
@@ -213,7 +265,7 @@ class Manager:
                 self._on_registration_success(shortcut_string)
             return True
         else:
-            error_code = kernel32.GetLastError()
+            error_code = ctypes.get_last_error()
             notifier.log(f"ショートカットキーの登録に失敗しました: {shortcut_string} (エラーコード: {error_code})")
             # 他アプリとの競合等による登録失敗を呼び出し元へ通知し、ユーザーへの案内を促す
             if self._on_registration_failure:
@@ -238,9 +290,10 @@ class Manager:
         WM_HOTKEY メッセージを検知した際にコールバック関数を別スレッドで非同期実行する。
         WM_QUIT を受信するとループを終了する。
         """
+        # 1. 再登録・終了のメッセージを送ってもらうため、このスレッドのIDを控える
         self._hotkey_thread_id = kernel32.GetCurrentThreadId()
 
-        # 設定ファイルから現在のショートカットキーを取得して登録
+        # 2. 設定ファイルから現在のショートカットキーを取得して登録
         import lib.settings as settings
 
         current_shortcut = settings.get("capture.triggerShortcut")
@@ -248,7 +301,7 @@ class Manager:
 
         message_structure = ctypes.wintypes.MSG()
 
-        # メッセージキューからメッセージを取得するループ（WM_QUIT 受信で戻り値 0 となり終了）
+        # 3. メッセージキューからメッセージを取得するループ（WM_QUIT 受信で戻り値 0 となり終了）
         while user32.GetMessageW(ctypes.byref(message_structure), None, 0, 0) > 0:
             # 登録したホットキーの押下イベント（WM_HOTKEY）を検知
             if message_structure.message == self._WM_HOTKEY and message_structure.wParam == self._HOTKEY_IDENTIFIER:
@@ -264,7 +317,7 @@ class Manager:
             user32.TranslateMessage(ctypes.byref(message_structure))
             user32.DispatchMessageW(ctypes.byref(message_structure))
 
-        # スレッド終了時に登録済みホットキーを確実に解除
+        # 4. スレッド終了時に登録済みホットキーを確実に解除
         self._unregister_hotkey()
 
     def _reload_hotkey(self):
@@ -366,25 +419,25 @@ class Recorder:
         name = (event.name or "").lower()
         event_type = event.event_type
 
-        # キーを離した時: 修飾キーが離されたら追跡セットから除去
+        # 1. キーを離した時: 修飾キーが離されたら追跡セットから除去
         if event_type == "up":
             if name in self._MODIFIER_MAP:
                 modifier = self._MODIFIER_MAP[name]
                 self._active_modifiers.discard(modifier)
             return
 
-        # キーを押した時（down）
+        # 2. キーを押した時（down）
         if event_type == "down":
             notifier.log(f"[フック受信] key='{name}'")
 
-            # 修飾キーが押された場合: 追跡セットに追加し、主キーが押されるのを待つ
+            # 2-1. 修飾キーが押された場合: 追跡セットに追加し、主キーが押されるのを待つ
             if name in self._MODIFIER_MAP:
                 modifier = self._MODIFIER_MAP[name]
                 self._active_modifiers.add(modifier)
                 notifier.log(f"修飾キー単体のため主キーの入力を待機中: '{name}' (現在の修飾キー: {self._active_modifiers})")
                 return
 
-            # Escキーによるキャンセル
+            # 2-2. Escキーによるキャンセル
             if name in ("esc", "escape"):
                 notifier.log("Escキーによるキャンセルを検知しました。")
                 self._is_finished = True
@@ -392,16 +445,16 @@ class Recorder:
                     self._on_cancelled()
                 return
 
-            # 押されている修飾キーを標準的な順序で並べる
+            # 2-3. 押されている修飾キーを標準的な順序で並べる
             modifiers = [mod for mod in self._MODIFIER_ORDER if mod in self._active_modifiers]
 
-            # メインキーの名称を正規化（スペースをアンダースコアに）
+            # 2-4. メインキーの名称を正規化（スペースをアンダースコアに）
             main_key = name.replace(" ", "_")
             candidate_shortcut = "+".join(modifiers + [main_key])
 
             notifier.log(f"[キー解析] 候補: '{candidate_shortcut}'")
 
-            # 登録可能な組み合わせか判定
+            # 2-5. 登録可能な組み合わせか判定し、登録可能であれば記録を確定する
             if Manager.is_valid_shortcut(candidate_shortcut):
                 notifier.log(f"ショートカットを確定しました: '{candidate_shortcut}'")
                 self._is_finished = True

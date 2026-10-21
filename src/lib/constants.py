@@ -5,15 +5,15 @@
 # アプリケーション表示名
 APP_NAME = "EXIF Capture"
 
-# Windowsタスクバーや通知で使用するアプリケーションID（AUMID）
-APP_USER_MODEL_ID = "exif_capture.app"
+# 設定画面の「このアプリについて」に表示する著作権表示
+COPYRIGHT = "© 2026 Titan-np"
+
+# 設定画面のタスクバーアイコンで使用するアプリケーションID（AUMID）
+# 常駐側・通知の AUMID は APP_NAME を使う（変えるとスタートメニューのショートカットや Windows 側の通知設定との紐づけが切れるため）
 APP_SETTINGS_USER_MODEL_ID = "exif_capture.settings"
 
 # アップデート確認で参照する GitHub リポジトリ（所有者/リポジトリ名）
 GITHUB_REPOSITORY = "Titan-np/exif-capture"
 
-# 新しいバージョンの通知から開くリリースページのURL
-RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases"
-
-# Windows の最大パス長（MAX_PATH 260 から終端文字分を引いた値）
-WINDOWS_MAX_PATH_LENGTH = 259
+# GitHub リポジトリのURL（リリースページの組み立てと、設定画面のリンクに使う）
+REPOSITORY_URL = f"https://github.com/{GITHUB_REPOSITORY}"

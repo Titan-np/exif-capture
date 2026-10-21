@@ -101,6 +101,20 @@ class TestParseShortcutString:
         """未定義のキー名が含まれている場合に拒否されることを検証する"""
         assert hotkey.Manager._parse_shortcut_string("ctrl+invalid_key_name") == (None, None)
 
+    def test_parse_symbol_key_uses_keyboard_layout(self, monkeypatch):
+        """記号キーが、現在のキーボード配列から取得した仮想キーコードに変換されることを検証する"""
+        # VkKeyScanW は下位バイトに仮想キーコード（0xBA: VK_OEM_1）、上位バイトにシフト状態を返す
+        monkeypatch.setattr(hotkey, "user32", MagicMock(VkKeyScanW=MagicMock(return_value=0x01BA)))
+
+        assert hotkey.Manager._parse_shortcut_string("ctrl+;")[1] == 0xBA
+
+    def test_parse_rejects_symbol_key_missing_in_keyboard_layout(self, monkeypatch):
+        """現在のキーボード配列に無い記号キーが、文字コードで代用されず拒否されることを検証する"""
+        # VkKeyScanW は該当キーが無い場合に -1 を返す
+        monkeypatch.setattr(hotkey, "user32", MagicMock(VkKeyScanW=MagicMock(return_value=-1)))
+
+        assert hotkey.Manager._parse_shortcut_string("ctrl+;") == (None, None)
+
 
 class TestIsValidShortcut:
     """
@@ -132,6 +146,58 @@ class TestIsValidShortcut:
         ]
         for invalid_shortcut in invalid_shortcut_list:
             assert hotkey.Manager.is_valid_shortcut(invalid_shortcut) is False
+
+
+class TestConflictsWithTyping:
+    """
+    文字入力と衝突するショートカットキーの判定（conflicts_with_typing）に関するテストクラス
+    """
+
+    def test_returns_true_for_typing_keys_without_ctrl_alt_win(self):
+        """文字入力に使うキーを、修飾キーなし・Shift のみで押す組み合わせで True を返すことを検証する"""
+        conflicting_shortcut_list = ["a", "1", "shift+a", "space"]
+        for conflicting_shortcut in conflicting_shortcut_list:
+            assert hotkey.Manager.conflicts_with_typing(conflicting_shortcut) is True, conflicting_shortcut
+
+    def test_returns_false_for_safe_shortcuts(self):
+        """Ctrl / Alt / Win を含む組み合わせや、文字入力に使わないキーで False を返すことを検証する"""
+        safe_shortcut_list = ["ctrl+a", "alt+1", "win+shift+s", "f12", "print screen", "shift+print screen", ""]
+        for safe_shortcut in safe_shortcut_list:
+            assert hotkey.Manager.conflicts_with_typing(safe_shortcut) is False, safe_shortcut
+
+
+class TestConflictsWithStandardShortcut:
+    """
+    他のアプリの標準的なショートカットとの衝突判定（conflicts_with_standard_shortcut）に関するテストクラス
+    """
+
+    def test_returns_true_for_standard_shortcuts(self):
+        """コピー・貼り付け・終了などの標準的なショートカット（表記揺れを含む）で True を返すことを検証する"""
+        for standard_shortcut in ["ctrl+c", "Ctrl+V", "control+z", "alt+f4"]:
+            assert hotkey.Manager.conflicts_with_standard_shortcut(standard_shortcut) is True, standard_shortcut
+
+    def test_returns_false_for_other_shortcuts(self):
+        """修飾キーが異なる組み合わせや、標準的でないショートカット、不正な形式で False を返すことを検証する"""
+        for other_shortcut in ["ctrl+shift+c", "shift+print screen", "alt+c", ""]:
+            assert hotkey.Manager.conflicts_with_standard_shortcut(other_shortcut) is False, other_shortcut
+
+
+class TestRegisterHotkey:
+    """
+    ホットキーの登録（_register_hotkey）に関するテストクラス
+    """
+
+    def test_passes_last_error_code_on_registration_failure(self, monkeypatch):
+        """登録失敗時に、ctypes が保持した Windows のエラーコードを失敗コールバックへ渡すことを検証する"""
+        # RegisterHotKey を失敗させ、エラーコード 1409（ERROR_HOTKEY_ALREADY_REGISTERED）を返すようにする
+        monkeypatch.setattr(hotkey, "user32", MagicMock(RegisterHotKey=MagicMock(return_value=0)))
+        monkeypatch.setattr(hotkey.ctypes, "get_last_error", lambda: 1409)
+        on_registration_failure = MagicMock()
+
+        manager = hotkey.Manager(callback_function=None, on_registration_failure=on_registration_failure)
+        assert manager._register_hotkey("ctrl+s") is False
+
+        on_registration_failure.assert_called_once_with("ctrl+s", 1409)
 
 
 class TestReloadHotkey:
