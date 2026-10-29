@@ -1,6 +1,6 @@
 """
 notifier モジュールの単体テスト
-通知の種別ごとの設定に応じたトースト通知の表示有無、通知のクリック時の処理、ログファイルの世代切り替えを検証する
+通知の種別ごとの設定に応じたトースト通知の表示有無、通知のクリック時の処理、ログファイルの世代切り替え、スタートメニューのショートカット更新を検証する
 """
 
 import os
@@ -194,3 +194,57 @@ class TestRotateLogFile:
         assert log_file.exists()
         logged_message = mock_notifier_actions["log"].call_args.args[0]
         assert "失敗" in logged_message
+
+
+class TestEnsureStartMenuShortcut:
+    """
+    スタートメニューのショートカット作成・更新（ensure_start_menu_shortcut）に関するテストクラス
+    """
+
+    @pytest.fixture
+    def start_menu_shortcut(self, tmp_path, monkeypatch):
+        """
+        実環境のスタートメニューに影響を与えないよう、保存先を一時ディレクトリに差し替え、ショートカット作成をモック化する fixture
+
+        Args:
+            tmp_path (pathlib.Path): pytest が提供する一時ディレクトリのパス
+            monkeypatch (pytest.MonkeyPatch): pytest のモンキーパッチ用オブジェクト
+
+        Returns:
+            tuple[pathlib.Path, MagicMock]: テスト用のショートカットのパス（作成はしない）と、create_app_shortcut の代わりのモック
+        """
+        from win32com.shell import shell
+
+        monkeypatch.setattr(shell, "SHGetFolderPath", lambda *arguments: str(tmp_path))
+        monkeypatch.setattr(notifier.windows_shell, "get_app_launch_target_path", lambda: r"C:\Apps\EXIF Capture.exe")
+        create_shortcut = MagicMock()
+        monkeypatch.setattr(notifier.windows_shell, "create_app_shortcut", create_shortcut)
+        return tmp_path / "EXIF Capture.lnk", create_shortcut
+
+    def test_creates_when_missing(self, start_menu_shortcut):
+        """ショートカットが未作成の場合は作成することを検証する"""
+        shortcut_path, create_shortcut = start_menu_shortcut
+
+        notifier.ensure_start_menu_shortcut()
+
+        create_shortcut.assert_called_once_with(str(shortcut_path), app_user_model_id=notifier.constants.APP_NAME)
+
+    def test_keeps_when_target_matches(self, start_menu_shortcut, monkeypatch):
+        """リンク先が現在の起動対象と一致する場合は、表記揺れがあっても上書きしないことを検証する"""
+        shortcut_path, create_shortcut = start_menu_shortcut
+        shortcut_path.touch()
+        monkeypatch.setattr(notifier.windows_shell, "get_shortcut_target_path", lambda path: r"c:/apps/exif capture.exe")
+
+        notifier.ensure_start_menu_shortcut()
+
+        create_shortcut.assert_not_called()
+
+    def test_recreates_when_target_differs(self, start_menu_shortcut, monkeypatch):
+        """リンク先が現在の起動対象と異なる（別フォルダのexeを起動した）場合は作り直すことを検証する"""
+        shortcut_path, create_shortcut = start_menu_shortcut
+        shortcut_path.touch()
+        monkeypatch.setattr(notifier.windows_shell, "get_shortcut_target_path", lambda path: r"C:\Old\EXIF Capture.exe")
+
+        notifier.ensure_start_menu_shortcut()
+
+        create_shortcut.assert_called_once()

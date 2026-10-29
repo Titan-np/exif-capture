@@ -128,6 +128,9 @@ def build_app():
         # assetsフォルダ内のすべてのファイルをバンドル対象にする (Windows環境を想定してセミコロン区切り)
         "--add-data=assets;assets",
         "--paths=src",  # src フォルダを明示的に探索パスに追加
+        # pywin32 がショートカットのリンク先取得（IShellLink.GetPath）で日時変換に使うモジュール。
+        # 実行時に動的 import されるため PyInstaller の解析で検出されず、明示しないと exe で読み込みに失敗する
+        "--hidden-import=win32timezone",
         f"--name={constants.APP_NAME}",
         "src/main.pyw",
     ]

@@ -119,6 +119,9 @@ def ensure_start_menu_shortcut():
     トースト通知のヘッダー（app_idの左）にアプリアイコンを表示させるため、
     スタートメニューに AUMID (System.AppUserModel.ID) 付きのショートカットを作成・更新する
     設定画面のプロセスでは不要なため、モジュール読み込み時ではなく常駐プロセスの起動処理（main.pyw）から呼び出す
+
+    ショートカットを上書きすると Windows がアイコンの紐づけを作り直し、PC起動直後は直後の起動通知に間に合わず白いアイコンになる。
+    そのため、未作成またはリンク先が現在の起動対象と異なる場合のみ作成・更新する。
     """
     try:
         from win32com.shell import shell, shellcon
@@ -129,9 +132,16 @@ def ensure_start_menu_shortcut():
         except Exception:
             pass
 
-        # 2. スタートメニューのプログラムフォルダに、AUMID付きのショートカットを作成・更新する
+        # 2. 既存のショートカットのリンク先が現在の起動対象と一致する場合は、上書きせずに終了する
+        # （大文字・小文字やパス区切りの表記揺れで不一致と判定しないよう、正規化して比較する）
         programs_directory = shell.SHGetFolderPath(0, shellcon.CSIDL_PROGRAMS, None, 0)
         shortcut_path = os.path.join(programs_directory, f"{constants.APP_NAME}.lnk")
+        if os.path.exists(shortcut_path):
+            current_target_path = os.path.normcase(os.path.normpath(windows_shell.get_shortcut_target_path(shortcut_path)))
+            if current_target_path == os.path.normcase(os.path.normpath(windows_shell.get_app_launch_target_path())):
+                return
+
+        # 3. スタートメニューのプログラムフォルダに、AUMID付きのショートカットを作成・更新する
         windows_shell.create_app_shortcut(shortcut_path, app_user_model_id=constants.APP_NAME)
 
     except Exception as exception:

@@ -12,6 +12,21 @@ import lib.paths as paths
 import lib.version as version
 
 
+def get_app_launch_target_path() -> str:
+    """
+    アプリを起動するショートカットのリンク先（exe、開発時は Python 実行ファイル）の絶対パスを取得する
+
+    Returns:
+        str: リンク先の絶対パス
+    """
+    # 開発時は pythonw.exe が存在すれば優先して使用し、コンソールウィンドウの表示を防ぐ
+    if not paths.is_executable():
+        pythonw_candidate = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        if os.path.exists(pythonw_candidate):
+            return pythonw_candidate
+    return sys.executable
+
+
 def create_app_shortcut(shortcut_path: str, app_user_model_id: str | None = None):
     """
     アプリを起動するショートカット（.lnk）を作成・上書きする
@@ -29,16 +44,10 @@ def create_app_shortcut(shortcut_path: str, app_user_model_id: str | None = None
     # 1. 起動対象（exeまたはpythonスクリプト）・引数・アイコンを決定
     # exe はアイコン未指定でも埋め込みアイコンが使われるため、開発時のみアイコンを指定する
     # （assets のアイコンは exe 終了時に削除される一時フォルダ(_MEIPASS)にあり、ショートカットからは参照できない）
+    target_path = get_app_launch_target_path()
+    arguments = ""
     icon_path = None
-    if paths.is_executable():
-        target_path = sys.executable
-        arguments = ""
-    else:
-        # 開発時は pythonw.exe が存在すれば優先して使用し、コンソールウィンドウの表示を防ぐ
-        target_path = sys.executable
-        pythonw_candidate = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-        if os.path.exists(pythonw_candidate):
-            target_path = pythonw_candidate
+    if not paths.is_executable():
         main_script = paths.resolve_app_relative_path(os.path.join("src", "main.pyw"))
         arguments = f'"{main_script}"'
         icon_path = paths.get_icon_path(version.APP_VERSION, is_development=True)
